@@ -1,0 +1,35 @@
+name: table_slide
+description: "Title + formal data table."
+
+slots:
+  required: [title, headers, rows]
+  optional: [highlight_cells, notes]
+
+slot_schema:
+  title: {type: string}
+  headers:
+    type: list
+    item: {type: string}
+  rows:
+    type: list
+    item:
+      type: list
+      item: {type: string}
+  highlight_cells:
+    type: list
+    hint: "list of [row_idx, col_idx] pairs to accent"
+    item:
+      type: list
+      item: {type: integer}
+
+geometry_defaults:
+  title: {left_in: 0.5, top_in: 0.5, w_in: 15.0, h_in: 0.8, font_role: display}
+  table: {left_in: 0.5, top_in: 1.6, w_in: 15.0, h_in: 7.0, font_role: body_small}
+  header_row: {font_role: pill_header, fill_color_role: brand_accent}
+
+theme_roles_used:
+  - fonts.display
+  - fonts.pill_header
+  - fonts.body_small
+  - palette.brand_accent
+  - palette.text_body

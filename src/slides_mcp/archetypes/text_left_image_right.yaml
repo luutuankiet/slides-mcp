@@ -1,0 +1,32 @@
+name: text_left_image_right
+description: "Title on top, text block (paragraph or numbered items) on the left, product screenshot/diagram on the right."
+
+slots:
+  required: [title]
+  optional: [body_paragraph, body_items, image, image_caption, notes]
+
+slot_schema:
+  title: {type: string}
+  body_paragraph: {type: string, hint: "use EITHER body_paragraph OR body_items, not both"}
+  body_items:
+    type: list
+    item:
+      type: object
+      fields:
+        num: {type: string, hint: "optional numeric label"}
+        header: {type: string}
+        body: {type: string, required: true}
+  image: {type: string, hint: "named asset or drive file id"}
+  image_caption: {type: string}
+
+geometry_defaults:
+  title: {left_in: 0.5, top_in: 0.5, w_in: 15.0, h_in: 0.8, font_role: display}
+  text_block: {left_in: 0.5, top_in: 1.6, w_in: 7.5, h_in: 7.0}
+  image: {left_in: 8.5, top_in: 1.6, w_in: 7.0, h_in: 6.5}
+  image_caption: {left_in: 8.5, top_in: 8.2, w_in: 7.0, h_in: 0.5, font_role: body_small}
+
+theme_roles_used:
+  - fonts.display
+  - fonts.body
+  - fonts.body_small
+  - palette.text_body

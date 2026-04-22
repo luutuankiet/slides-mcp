@@ -1,0 +1,36 @@
+name: cover_with_hero
+description: "Title slide with a large hero image on one side and title/subtitle block on the other."
+
+slots:
+  required: [title]
+  optional: [subtitle, hero, logo_strip, accent_panel]
+
+slot_schema:
+  title: {type: string}
+  subtitle: {type: string}
+  hero:
+    type: object
+    fields:
+      image: {type: string, required: true, hint: "named asset or drive file id"}
+      side: {type: enum, values: [left, right], default: left}
+  logo_strip:
+    type: list
+    of: {type: string, hint: "named logo id"}
+  accent_panel:
+    type: object
+    fields:
+      side: {type: enum, values: [left, right]}
+      color_role: {type: string, default: brand_accent_dark}
+
+geometry_defaults:
+  hero: {w_in: 7.5, h_in: 9.0, top_in: 0.0}
+  text_block: {w_in: 7.5, left_in: 8.5, top_in: 3.0}
+  title: {font_role: display, color_role: text_strong}
+  subtitle: {font_role: body, color_role: text_body, top_offset_in: 1.2}
+
+theme_roles_used:
+  - fonts.display
+  - fonts.body
+  - palette.text_strong
+  - palette.text_body
+  - palette.brand_accent_dark

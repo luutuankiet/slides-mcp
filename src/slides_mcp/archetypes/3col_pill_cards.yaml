@@ -1,0 +1,40 @@
+name: 3col_pill_cards
+description: "Title + optional lead paragraph + 3 columns, each with a colored pill header over a tinted card body."
+
+slots:
+  required: [title, columns]
+  optional: [lead, notes]
+  constraints:
+    columns_count: 3
+
+slot_schema:
+  title: {type: string}
+  lead: {type: string, hint: "markdown paragraph; **bold** preserved"}
+  columns:
+    type: list
+    length: 3
+    item:
+      type: object
+      fields:
+        pill: {type: string, required: true}
+        body: {type: string, required: true}
+        pill_color_override: {type: string, hint: "optional hex override; if unset pulls from theme"}
+        card_color_override: {type: string}
+
+geometry_defaults:
+  title:     {left_in: 0.9, top_in: 0.6, w_in: 14.4, h_in: 0.9, font_role: display}
+  lead:      {left_in: 0.9, top_in: 2.2, w_in: 14.4, h_in: 2.0, font_role: body}
+  column_1:  {left_in: 0.9, top_in: 5.6, w_in: 4.6, h_in: 2.3}
+  column_2:  {left_in: 5.7, top_in: 5.6, w_in: 4.6, h_in: 2.3}
+  column_3:  {left_in: 10.5, top_in: 5.6, w_in: 4.6, h_in: 2.3}
+  pill:      {font_role: pill_header, color_role: brand_accent}
+  body:      {font_role: body, color_role: text_body}
+  card_fill: {color_role: surface_card}
+
+theme_roles_used:
+  - fonts.display
+  - fonts.pill_header
+  - fonts.body
+  - palette.brand_accent
+  - palette.surface_card
+  - palette.text_body

@@ -1,0 +1,29 @@
+name: generic_layout
+description: "Escape hatch for slides that don't fit any archetype. Preserves raw element geometry. Used for brownfield decks."
+
+slots:
+  required: [elements]
+  optional: [title, notes]
+
+slot_schema:
+  title: {type: string, hint: "best-effort title extraction"}
+  elements:
+    type: list
+    item:
+      type: object
+      fields:
+        kind: {type: enum, values: [text, picture, shape, line, table, chart, group]}
+        left_in: {type: number, required: true}
+        top_in: {type: number, required: true}
+        w_in: {type: number, required: true}
+        h_in: {type: number, required: true}
+        # kind-specific fields (one of):
+        text: {type: string, hint: "for kind=text"}
+        font: {type: object, hint: "for kind=text: family, size_pt, weight, color_role"}
+        asset: {type: string, hint: "for kind=picture"}
+        shape_type: {type: string, hint: "for kind=shape, e.g. RECTANGLE, ELLIPSE"}
+        fill_color_role: {type: string, hint: "for kind=shape"}
+
+geometry_defaults: {}  # generic layout has no defaults — all positions are explicit
+
+theme_roles_used: []  # optional; elements can reference roles or use direct hex (drift auto-flagged)

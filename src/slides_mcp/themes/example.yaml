@@ -1,0 +1,71 @@
+# Example theme — generic placeholder shipped with the MCP.
+# This file demonstrates the theme shape. It is NOT your brand.
+#
+# To use your real brand:
+#   1. Copy this file to ~/.config/slides-mcp/themes/mybrand.yaml
+#   2. Replace the palette, fonts, and tokens with your values
+#   3. Reference it per deck via `theme: mybrand.primary` in the DSL
+#
+# Theme resolution order (first match wins):
+#   1. $SLIDES_MCP_THEMES_DIR
+#   2. $XDG_CONFIG_HOME/slides-mcp/themes  (default: ~/.config/slides-mcp/themes)
+#   3. ./slides-mcp-themes  (project-local, should be gitignored)
+#   4. This bundled example.yaml (fallback)
+
+name: example
+description: "Placeholder theme demonstrating the schema. Replace with your brand."
+
+sub_themes:
+  primary:
+    palette:
+      brand_accent:    "#3366CC"
+      brand_accent_dark: "#1F4F9F"
+      text_body:       "#333333"
+      text_strong:     "#111111"
+      surface_card:    "#F3F3F3"
+      surface_page:    "#FFFFFF"
+    fonts:
+      display:
+        family: "Inter"
+        size_pt: 36
+        weight: 700
+      pill_header:
+        family: "Inter"
+        size_pt: 22
+        weight: 600
+        color_ref: palette.brand_accent
+      body:
+        family: "Inter"
+        size_pt: 18
+        weight: 400
+      body_small:
+        family: "Inter"
+        size_pt: 13
+        weight: 400
+
+  alt_palette:
+    palette:
+      brand_accent:    "#CC6633"
+      brand_accent_dark: "#A04D1F"
+      text_body:       "#2A2A2A"
+      text_strong:     "#000000"
+      surface_card:    "#F7E8DC"
+      surface_page:    "#FFFFFF"
+    fonts:
+      display:   {family: "Serif Display", size_pt: 38, weight: 800}
+      pill_header: {family: "Serif Display", size_pt: 24, weight: 600, color_ref: palette.brand_accent}
+      body:      {family: "Sans Body", size_pt: 18, weight: 400}
+      body_small: {family: "Sans Body", size_pt: 13, weight: 400}
+
+slide_dimensions:
+  width_in: 16.0
+  height_in: 9.0
+  aspect: "16:9"
+
+layout_tokens:
+  safe_margin_in: 0.5
+  column_gutter_in: 1.1
+  col_3_width_in: 4.6
+  col_3_height_in: 2.3
+  col_3_top_in: 5.6
+  card_padding_in: 0.2

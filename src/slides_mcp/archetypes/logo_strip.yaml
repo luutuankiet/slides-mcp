@@ -1,0 +1,25 @@
+name: logo_strip
+description: "Horizontal band of logos (partners, tech stack) with optional label above."
+
+slots:
+  required: [logos]
+  optional: [label, notes]
+
+slot_schema:
+  label: {type: string}
+  logos:
+    type: list
+    item:
+      type: object
+      fields:
+        asset: {type: string, required: true, hint: "named asset id"}
+        caption: {type: string}
+
+geometry_defaults:
+  label: {left_in: 0.5, top_in: 3.5, w_in: 15.0, h_in: 0.6, font_role: body_small}
+  logo_row: {top_in: 4.5, h_in: 1.5}
+  layout: grid_auto  # renderer computes equal-width cells from logo count
+
+theme_roles_used:
+  - fonts.body_small
+  - palette.text_body

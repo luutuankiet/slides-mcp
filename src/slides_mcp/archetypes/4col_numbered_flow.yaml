@@ -1,0 +1,47 @@
+name: 4col_numbered_flow
+description: "Title + 4 columns, each with a large numeric label, subtitle, body, and status chip. Vertical separator lines between columns."
+
+slots:
+  required: [title, columns]
+  optional: [separators, notes, logos]
+  constraints:
+    columns_count: 4
+
+slot_schema:
+  title: {type: string}
+  separators: {type: bool, default: true}
+  columns:
+    type: list
+    length: 4
+    item:
+      type: object
+      fields:
+        num: {type: string, required: true, hint: "e.g. '01'"}
+        num_color_role: {type: string, default: brand_accent}
+        subtitle: {type: string, required: true}
+        body: {type: string, required: true}
+        status:
+          type: object
+          fields:
+            label: {type: string, required: true}
+            color_role: {type: string, default: neutral_muted}
+  logos:
+    type: list
+    of: {type: string}
+
+geometry_defaults:
+  title:        {left_in: 0.5, top_in: 0.5, w_in: 15.0, h_in: 0.6, font_role: display}
+  column_width_in: 3.2
+  column_gap_in: 0.4
+  num_font_role: display
+  subtitle_font_role: pill_header
+  body_font_role: body_small
+  status_chip_font_role: body_small
+  separator: {type: line, color_role: text_body, width_pt: 0.5}
+
+theme_roles_used:
+  - fonts.display
+  - fonts.pill_header
+  - fonts.body_small
+  - palette.brand_accent
+  - palette.text_body
