@@ -181,3 +181,85 @@ def test_geometry_changed_detects_element_add_remove():
         ("iconB", 3.0, 3.0, 0.5, 0.5),
     )
     assert geometry_changed(old, new)
+
+
+# ---------- notes write emission (T2.5) ----------
+
+def test_diff_notes_with_object_id_emits_delete_and_insert():
+    old = _base_3col()
+    new = _base_3col()
+    new["notes"] = "updated speaker notes"
+    result = diff_slide(
+        old, new, slide_id="s01", notes_object_id="notesBodyObj_XYZ",
+    )
+    assert len(result.requests) == 2
+    assert "deleteText" in result.requests[0]
+    assert result.requests[0]["deleteText"]["objectId"] == "notesBodyObj_XYZ"
+    assert "insertText" in result.requests[1]
+    assert result.requests[1]["insertText"]["objectId"] == "notesBodyObj_XYZ"
+    assert result.requests[1]["insertText"]["text"] == "updated speaker notes"
+    assert not any("notes change" in w for w in result.warnings)
+    assert any("notes change" in s for s in result.summary)
+
+
+def test_diff_notes_without_object_id_still_warns():
+    old = _base_3col()
+    new = _base_3col()
+    new["notes"] = "different"
+    result = diff_slide(old, new, slide_id="s01")  # no notes_object_id
+    assert result.empty()  # no emission without id
+    assert any("no notes_object_id" in w for w in result.warnings)
+
+
+def test_diff_notes_from_empty_only_emits_insert():
+    old = _base_3col()
+    old["notes"] = ""
+    new = _base_3col()
+    new["notes"] = "fresh notes"
+    result = diff_slide(
+        old, new, slide_id="s01", notes_object_id="notesBodyObj_XYZ",
+    )
+    assert len(result.requests) == 1
+    assert "insertText" in result.requests[0]
+
+
+# ---------- object-scoped text edits (T2.8) ----------
+
+def test_diff_title_with_object_id_uses_delete_insert():
+    old = _base_3col()
+    old["_object_ids"] = {"title": "titleObj_1"}
+    new = _base_3col()
+    new["title"] = "Looker Is Everything"
+    result = diff_slide(old, new, slide_id="s01")
+    assert len(result.requests) == 2
+    assert result.requests[0]["deleteText"]["objectId"] == "titleObj_1"
+    assert result.requests[1]["insertText"]["objectId"] == "titleObj_1"
+    assert result.requests[1]["insertText"]["text"] == "Looker Is Everything"
+    assert any("object-scoped" in s for s in result.summary)
+
+
+def test_diff_title_without_object_id_falls_back_to_replaceAllText():
+    old = _base_3col()  # no _object_ids
+    new = _base_3col()
+    new["title"] = "Looker Is Everything"
+    result = diff_slide(old, new, slide_id="s01")
+    assert len(result.requests) == 1
+    assert "replaceAllText" in result.requests[0]
+
+
+def test_diff_paragraphs_with_ids_uses_object_scoped():
+    old = {
+        "id": "s01", "layout": "text_heavy_body", "title": "Context",
+        "paragraphs": ["para one", "para two"],
+        "_object_ids": {"paragraphs": ["pid_1", "pid_2"]},
+    }
+    new = {
+        "id": "s01", "layout": "text_heavy_body", "title": "Context",
+        "paragraphs": ["para one revised", "para two"],
+    }
+    result = diff_slide(old, new, slide_id="s01")
+    # deleteText + insertText for paragraph[0] only (paragraph[1] unchanged)
+    assert len(result.requests) == 2
+    assert result.requests[0]["deleteText"]["objectId"] == "pid_1"
+    assert result.requests[1]["insertText"]["objectId"] == "pid_1"
+    assert result.requests[1]["insertText"]["text"] == "para one revised"

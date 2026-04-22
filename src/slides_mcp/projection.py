@@ -47,6 +47,19 @@ def _run_size(s: FlatShape) -> float:
     return 0.0
 
 
+def _compact_image_ref(s: FlatShape) -> str:
+    """Short reference for an image element.
+
+    Full Google `contentUrl` values run ~70 tok/slide and expire; for agent
+    reads we keep an objectId-scoped ref instead. Callers that need bytes
+    use `render_thumbnail`; callers that need the live URL use
+    `render_thumbnail_url` or the faithful-mode passthrough.
+    """
+    if s.object_id:
+        return f"ref://{s.object_id}"
+    return "<image_asset>"
+
+
 def _best_title(flat: list[FlatShape]) -> FlatShape | None:
     """Biggest text on the slide by font size, tiebreaker = width. Position-agnostic."""
     candidates = [s for s in flat if s.kind == "text" and s.text]
@@ -184,6 +197,11 @@ def _project_3col_pill_cards(
         out["lead"] = lead
     if notes:
         out["notes"] = notes
+    ids: dict[str, Any] = {}
+    if title_shape and title_shape.object_id:
+        ids["title"] = title_shape.object_id
+    if ids:
+        out["_object_ids"] = ids
     return out
 
 
@@ -218,12 +236,19 @@ def _project_cover_with_hero(
         "id": slide_id,
         "layout": "cover_with_hero",
         "title": title_shape.text.strip() if title_shape else "",
-        "hero": {"image": hero.image_url or "<hero_asset>", "side": side},
+        "hero": {"image": _compact_image_ref(hero), "side": side},
     }
     if subtitle:
         out["subtitle"] = subtitle
     if notes:
         out["notes"] = notes
+    ids: dict[str, Any] = {}
+    if title_shape and title_shape.object_id:
+        ids["title"] = title_shape.object_id
+    if subtitle and sub_candidates and sub_candidates[0].object_id:
+        ids["subtitle"] = sub_candidates[0].object_id
+    if ids:
+        out["_object_ids"] = ids
     return out
 
 
@@ -247,6 +272,14 @@ def _project_text_heavy_body(
     }
     if notes:
         out["notes"] = notes
+    ids: dict[str, Any] = {}
+    if title_shape and title_shape.object_id:
+        ids["title"] = title_shape.object_id
+    para_ids = [s.object_id for s in body_texts if s.object_id]
+    if len(para_ids) == len(body_texts) and para_ids:
+        ids["paragraphs"] = para_ids
+    if ids:
+        out["_object_ids"] = ids
     return out
 
 
@@ -269,10 +302,18 @@ def _project_text_left_image_right(
         "layout": "text_left_image_right",
         "title": title_shape.text.strip() if title_shape else "",
         "body_paragraph": " ".join((s.text or "").strip() for s in body_texts) or None,
-        "image": image.image_url or "<image_asset>",
+        "image": _compact_image_ref(image),
     }
     if notes:
         out["notes"] = notes
+    ids: dict[str, Any] = {}
+    if title_shape and title_shape.object_id:
+        ids["title"] = title_shape.object_id
+    # body_paragraph id is only safe to track when exactly one shape contributed
+    if len(body_texts) == 1 and body_texts[0].object_id:
+        ids["body_paragraph"] = body_texts[0].object_id
+    if ids:
+        out["_object_ids"] = ids
     return out
 
 

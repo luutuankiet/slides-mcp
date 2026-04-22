@@ -52,27 +52,72 @@ def _replace_text_request(deck_scope_obj_id: str, old: str, new: str) -> dict[st
     }
 
 
-def _notes_replace_request(notes_object_id: str, old: str, new: str) -> dict[str, Any]:
-    """Replace notes body by object ID. The notes body placeholder has a stable ID."""
-    return {
-        "deleteText": {
-            "objectId": notes_object_id,
-            "textRange": {"type": "ALL"},
-        }
-    }, {
-        "insertText": {
-            "objectId": notes_object_id,
-            "text": new,
-            "insertionIndex": 0,
-        }
-    }
+def _object_scoped_text_requests(
+    object_id: str, old: str, new: str,
+) -> list[dict[str, Any]]:
+    """Two-request pair to replace a text element's body by object ID.
+
+    Immune to the `replaceAllText` duplicate-hit problem (two slots on the same
+    slide sharing the exact same string). deleteText on empty is a 400, so we
+    skip it when `old` is empty.
+    """
+    out: list[dict[str, Any]] = []
+    if old:
+        out.append({
+            "deleteText": {
+                "objectId": object_id,
+                "textRange": {"type": "ALL"},
+            }
+        })
+    if new:
+        out.append({
+            "insertText": {
+                "objectId": object_id,
+                "text": new,
+                "insertionIndex": 0,
+            }
+        })
+    return out
+
+
+def _notes_replace_requests(
+    notes_object_id: str, old: str, new: str,
+) -> list[dict[str, Any]]:
+    """Two-request pair to replace a notes body by object ID.
+
+    deleteText({ALL}) then insertText at index 0. If the old body is empty we
+    skip the delete — deleteText on empty text is a 400.
+    """
+    out: list[dict[str, Any]] = []
+    if old:
+        out.append({
+            "deleteText": {
+                "objectId": notes_object_id,
+                "textRange": {"type": "ALL"},
+            }
+        })
+    if new:
+        out.append({
+            "insertText": {
+                "objectId": notes_object_id,
+                "text": new,
+                "insertionIndex": 0,
+            }
+        })
+    return out
 
 
 def _diff_text_slot(
     old_val: Any, new_val: Any, slot_name: str,
     slide_id: str, result: DiffResult,
+    object_id: str | None = None,
 ) -> None:
-    """Top-level string slot comparison."""
+    """Top-level string slot comparison.
+
+    When `object_id` is supplied, emits per-object `deleteText + insertText`
+    — immune to duplicate-hit. Otherwise falls back to slide-scoped
+    `replaceAllText` (caller must keep the old string unique on the slide).
+    """
     if old_val == new_val:
         return
     if not isinstance(old_val, str) or not isinstance(new_val, str):
@@ -80,6 +125,12 @@ def _diff_text_slot(
             f"slot '{slot_name}' type mismatch (old: {type(old_val).__name__}, "
             f"new: {type(new_val).__name__}); skipping"
         )
+        return
+    if object_id:
+        reqs = _object_scoped_text_requests(object_id, old_val, new_val)
+        if reqs:
+            result.requests.extend(reqs)
+            result.summary.append(f"text change: {slot_name} (object-scoped)")
         return
     if not old_val.strip():
         # Can't use replaceAllText when the target is empty; would need insert
@@ -127,6 +178,7 @@ def _diff_paragraphs(
     new_paras: list[str] | None,
     slide_id: str,
     result: DiffResult,
+    paragraph_ids: list[str] | None = None,
 ) -> None:
     old_paras = old_paras or []
     new_paras = new_paras or []
@@ -136,8 +188,10 @@ def _diff_paragraphs(
             f"append/remove paragraphs uses a different request shape; "
             f"only overlapping indexes diffed as text changes"
         )
+    ids = paragraph_ids or []
     for i, (o, n) in enumerate(zip(old_paras, new_paras, strict=False)):
-        _diff_text_slot(o, n, f"paragraph[{i}]", slide_id, result)
+        oid = ids[i] if i < len(ids) else None
+        _diff_text_slot(o, n, f"paragraph[{i}]", slide_id, result, object_id=oid)
 
 
 def _elements_by_id(elements: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
@@ -223,12 +277,18 @@ def _diff_elements(
 
 def diff_slide(
     old: dict[str, Any], new: dict[str, Any], slide_id: str,
+    notes_object_id: str | None = None,
 ) -> DiffResult:
     """Return batchUpdate requests that bring `old` → `new` for one slide.
 
     Both `old` and `new` must be DSL dicts (clean mode). `slide_id` is the
     pageObjectId in the deck. The same archetype is assumed; an archetype swap
     is a warning.
+
+    notes_object_id: if the caller pre-resolved the notes body objectId
+    (via normalize.extract_notes), notes changes are emitted as
+    deleteText + insertText on that object. Omit and notes changes remain
+    a warning (legacy behavior).
     """
     result = DiffResult()
 
@@ -239,24 +299,41 @@ def diff_slide(
         )
         return result
 
-    # Top-level text slots (strings only)
-    text_slots = ["title", "subtitle", "lead", "section_title"]
+    # Source of truth for per-slot objectIds: the OLD DSL (server-projected).
+    # Callers don't need to round-trip `_object_ids` — we always use old's map.
+    obj_ids = old.get("_object_ids") or {}
+
+    # Top-level text slots (strings only). Fall back to replaceAllText when
+    # the slot has no registered objectId (legacy behavior).
+    text_slots = ["title", "subtitle", "lead", "section_title", "body_paragraph"]
     for slot in text_slots:
         if slot in old or slot in new:
             _diff_text_slot(
                 old.get(slot, ""), new.get(slot, ""), slot, slide_id, result,
+                object_id=obj_ids.get(slot) if isinstance(obj_ids, dict) else None,
             )
 
-    # Notes (handled by object id, not by replaceAllText since notes body is separate)
+    # Notes (separate pageElement — needs per-object deleteText + insertText).
     if old.get("notes") != new.get("notes"):
-        # v1 emits a warning to upgrade callers; the write path will patch notes
-        # via the notes_object_id it fetches separately.
-        result.warnings.append(
-            "notes change detected; writer must apply via notes_object_id "
-            "(deleteText + insertText). Not expressible as a single replaceAllText."
-        )
-        # Still add a synthetic marker to the summary so callers know.
-        result.summary.append("notes change (deferred to writer)")
+        old_notes = (old.get("notes") or "") or ""
+        new_notes = (new.get("notes") or "") or ""
+        if isinstance(old_notes, str) and isinstance(new_notes, str):
+            if notes_object_id:
+                reqs = _notes_replace_requests(notes_object_id, old_notes, new_notes)
+                if reqs:
+                    result.requests.extend(reqs)
+                    result.summary.append("notes change")
+            else:
+                result.warnings.append(
+                    "notes change detected but no notes_object_id supplied; "
+                    "skipping — caller should pass notes_object_id to diff_slide"
+                )
+                result.summary.append("notes change (skipped)")
+        else:
+            result.warnings.append(
+                f"notes type mismatch (old: {type(old_notes).__name__}, "
+                f"new: {type(new_notes).__name__}); skipping"
+            )
 
     # Columns
     if "columns" in old or "columns" in new:
@@ -264,7 +341,11 @@ def diff_slide(
 
     # Paragraphs (text_heavy_body)
     if "paragraphs" in old or "paragraphs" in new:
-        _diff_paragraphs(old.get("paragraphs"), new.get("paragraphs"), slide_id, result)
+        para_ids = obj_ids.get("paragraphs") if isinstance(obj_ids, dict) else None
+        _diff_paragraphs(
+            old.get("paragraphs"), new.get("paragraphs"), slide_id, result,
+            paragraph_ids=para_ids if isinstance(para_ids, list) else None,
+        )
 
     # Semantic geometry/asset slots: flag any change (asset swap not supported)
     geometry_slots = ["hero", "image", "accent_panel", "footer_gradient",

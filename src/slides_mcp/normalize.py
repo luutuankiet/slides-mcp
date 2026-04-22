@@ -224,16 +224,26 @@ def flatten(shapes: list[FlatShape]) -> list[FlatShape]:
     return out
 
 
-def extract_notes_text(slide: dict[str, Any]) -> str:
-    """Pull speaker notes from a slide's notesPage."""
+def extract_notes(slide: dict[str, Any]) -> tuple[str, str | None]:
+    """Pull speaker notes + the notes body objectId.
+
+    Returns (text, object_id). object_id is the pageElement id of the notes
+    BODY placeholder — callers need it to emit per-object notes edits
+    (deleteText + insertText). Returns ("", None) when no notes body exists.
+    """
     notes_page = (slide.get("slideProperties") or {}).get("notesPage")
     if not notes_page:
-        return ""
+        return "", None
     for el in notes_page.get("pageElements") or []:
         shape = el.get("shape") or {}
         placeholder = (shape.get("placeholder") or {}).get("type")
         if placeholder != "BODY":
             continue
         text, _ = _extract_text(shape)
-        return text.strip()
-    return ""
+        return text.strip(), el.get("objectId")
+    return "", None
+
+
+def extract_notes_text(slide: dict[str, Any]) -> str:
+    """Back-compat wrapper: returns only the text."""
+    return extract_notes(slide)[0]
