@@ -110,28 +110,20 @@ jobs:
             --notes-file /tmp/release-body.md \
             dist/*
 
-  # --- PyPI publish (disabled — enable once OIDC Trusted Publisher is configured)
-  #
-  # publish:
-  #   runs-on: ubuntu-latest
-  #   needs: [build, release]
-  #   permissions:
-  #     id-token: write
-  #     contents: read
-  #   steps:
-  #     - name: Download dist artifact
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: dist
-  #         path: dist/
-  #     - name: Publish to PyPI (OIDC Trusted Publisher)
-  #       uses: pypa/gh-action-pypi-publish@release/v1
-  #       with:
-  #         skip-existing: true
-  #
-  # One-time setup on pypi.org:
-  #   1. Your Project → Settings → Publishing → Add Trusted Publisher
-  #   2. Owner: luutuankiet · Repo: slides-mcp · Workflow: release.yml
-  #   3. Leave Environment blank
-  # For first-time publishes (package not yet on PyPI): use the "Pending Publisher"
-  # feature with the same fields — the first v* tag push creates the package.
+  # PyPI publish via OIDC Trusted Publisher (Pending Publisher registered on pypi.org).
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build, release]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI (OIDC Trusted Publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
