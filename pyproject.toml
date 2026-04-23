@@ -1,6 +1,6 @@
 [project]
 name = "slides-mcp"
-version = "0.4.1"
+version = "0.5.0"
 description = "Google Slides MCP server with compact YAML DSL and brand-theme enforcement"
 requires-python = ">=3.11"
 dependencies = [
