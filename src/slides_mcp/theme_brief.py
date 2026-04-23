@@ -26,6 +26,7 @@ Safety:
 """
 from __future__ import annotations
 
+import copy as _copy_mod
 from typing import Any
 
 import yaml
@@ -702,3 +703,166 @@ def extract_brief_from_prez(prez: dict[str, Any]) -> dict[str, Any]:
         "evidence": evidence,
         "confidence": confidence,
     }
+
+
+# ------------------------------------------------------------------
+# Variant proposals (v0.5.0 — B1)
+# ------------------------------------------------------------------
+
+# Curated mood templates. Each combines a palette with shape/tone/numbering choices
+# to produce a distinct-feeling visual identity. Keywords bias the scoring against
+# an intent string. Templates intentionally differ on palette.accent (distinctness
+# invariant) and on shape_language x numbering_style combinations (structural variety).
+#
+# Order matters — it's the deterministic tiebreaker when scores are equal. Early
+# templates win ties, so put broadly-applicable moods first.
+_MOOD_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "keywords": {"editorial", "magazine", "publication", "narrative", "story",
+                     "journal", "feature"},
+        "brief": {
+            "version": SCHEMA_VERSION,
+            "palette": {
+                "surface": "#0F1A4A",
+                "accent": "#E8612E",
+                "text": "#1A1A1A",
+                "category_set": ["#E8612E", "#0F1A4A", "#5A6B9A"],
+            },
+            "shape_language": "sharp",
+            "numbering_style": "bold",
+            "tone": "clean editorial",
+            "image_prompt_style": "documentary photography, warm light",
+        },
+    },
+    {
+        "keywords": {"enterprise", "corporate", "b2b", "confident", "buyer",
+                     "executive", "cio", "ceo", "qbr"},
+        "brief": {
+            "version": SCHEMA_VERSION,
+            "palette": {
+                "surface": "#134E4A",
+                "accent": "#B45309",
+                "text": "#1F2937",
+                "category_set": ["#B45309", "#134E4A", "#A16207"],
+            },
+            "shape_language": "sharp",
+            "numbering_style": "outlined",
+            "tone": "confident enterprise",
+            "image_prompt_style": "editorial photography, dark saturated palette",
+        },
+    },
+    {
+        "keywords": {"tech", "technical", "data", "analytics", "ai", "software",
+                     "saas", "platform", "dashboard", "api"},
+        "brief": {
+            "version": SCHEMA_VERSION,
+            "palette": {
+                "surface": "#FFFFFF",
+                "accent": "#2563EB",
+                "text": "#0F172A",
+                "category_set": ["#2563EB", "#0EA5E9", "#8B5CF6"],
+            },
+            "shape_language": "rounded",
+            "numbering_style": "dot",
+            "tone": "minimalist technical",
+            "image_prompt_style": "isometric illustration, clean vector",
+        },
+    },
+    {
+        "keywords": {"warm", "human", "organic", "wellness", "community", "care",
+                     "lifestyle", "craft"},
+        "brief": {
+            "version": SCHEMA_VERSION,
+            "palette": {
+                "surface": "#FEF3C7",
+                "accent": "#7C2D12",
+                "text": "#1C1917",
+                "category_set": ["#7C2D12", "#A16207", "#78350F"],
+            },
+            "shape_language": "rounded",
+            "numbering_style": "dot",
+            "tone": "warm and human",
+            "image_prompt_style": "hand-drawn illustration, earthy tones",
+        },
+    },
+    {
+        "keywords": {"bold", "striking", "provocative", "creative", "agency",
+                     "pitch", "brand"},
+        "brief": {
+            "version": SCHEMA_VERSION,
+            "palette": {
+                "surface": "#1F2937",
+                "accent": "#F59E0B",
+                "text": "#FFFFFF",
+                "category_set": ["#F59E0B", "#EC4899", "#8B5CF6"],
+            },
+            "shape_language": "sharp",
+            "numbering_style": "bold",
+            "tone": "bold magazine",
+            "image_prompt_style": "high-contrast editorial photography",
+        },
+    },
+    {
+        "keywords": {"elegant", "luxury", "serif", "refined", "timeless",
+                     "heritage", "fine"},
+        "brief": {
+            "version": SCHEMA_VERSION,
+            "palette": {
+                "surface": "#F5F1E8",
+                "accent": "#78350F",
+                "text": "#1C1917",
+                "category_set": ["#78350F", "#44403C", "#A8A29E"],
+            },
+            "shape_language": "sharp",
+            "numbering_style": "outlined",
+            "tone": "elegant editorial",
+            "image_prompt_style": "fine-art photography, natural light",
+        },
+    },
+]
+
+
+def propose_brief_variants(intent: str, n: int = 3) -> list[dict[str, Any]]:
+    """Propose n distinct-mood theme briefs from natural-language intent.
+
+    Pure function — deterministic: same (intent, n) → same returned list.
+
+    Strategy: each mood template has a keyword set. For each template, score
+    against intent (case-insensitive substring match, one point per matched
+    keyword). Sort by score DESC, tiebreak by template order. Return top-n
+    briefs, enforcing palette-accent distinctness (any tie on accent drops
+    the later template and continues to the next).
+
+    Guarantees:
+      - 0 <= len(result) <= min(n, len(_MOOD_TEMPLATES))
+      - Every returned brief passes validate_brief
+      - No two returned briefs share the same palette.accent
+      - Each brief is a FRESH copy — caller can mutate without poisoning
+        the next call
+
+    n <= 0 returns an empty list.
+    """
+    if n <= 0:
+        return []
+
+    intent_lower = (intent or "").lower()
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for i, template in enumerate(_MOOD_TEMPLATES):
+        keywords = template.get("keywords") or set()
+        score = sum(1 for kw in keywords if kw in intent_lower)
+        # (-score, index) sort gives score DESC, index ASC tiebreak
+        scored.append((-score, i, template["brief"]))
+
+    scored.sort()
+
+    result: list[dict[str, Any]] = []
+    seen_accents: set[str] = set()
+    for _score, _i, brief in scored:
+        accent = (brief.get("palette") or {}).get("accent")
+        if accent in seen_accents:
+            continue
+        seen_accents.add(accent)
+        result.append(_copy_mod.deepcopy(brief))
+        if len(result) == n:
+            break
+    return result

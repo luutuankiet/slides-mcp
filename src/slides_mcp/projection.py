@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .normalize import FlatShape, flatten
+from .normalize import FlatShape, TextRun, flatten
 from .theme import SubTheme
 
 Mode = Literal["clean", "faithful"]
@@ -342,6 +342,60 @@ def _projected_elements(shapes: list[FlatShape]) -> list[dict[str, Any]]:
     return out
 
 
+def _is_default_run(r: TextRun) -> bool:
+    """A run carries no styling signal (all fields at their defaults).
+
+    Such runs are redundant — their text is already in the slot value. When a
+    shape consists of exactly ONE default run, the style channel adds no
+    information and can be skipped to save tokens.
+    """
+    return (
+        r.font_family is None
+        and r.size_pt is None
+        and not r.bold
+        and not r.italic
+        and r.color_hex is None
+    )
+
+
+def _run_to_dict(r: TextRun) -> dict[str, Any]:
+    """Emit a run as DSL: always include `text`; include style fields only when
+    they carry signal. Keeps per-run overhead ~8 tokens when styled, ~4 when plain."""
+    out: dict[str, Any] = {"text": r.content}
+    if r.font_family:
+        out["font_family"] = r.font_family
+    if r.size_pt:
+        out["size_pt"] = r.size_pt
+    if r.bold:
+        out["bold"] = True
+    if r.italic:
+        out["italic"] = True
+    if r.color_hex:
+        out["color_hex"] = r.color_hex
+    return out
+
+
+def _projected_styles(shapes: list[FlatShape]) -> dict[str, list[dict[str, Any]]]:
+    """Build the `_styles` channel: per-shape run lists, style-bearing shapes only.
+
+    Skipped:
+      - non-text shapes
+      - shapes without an object_id (we can't reference them)
+      - shapes whose only run is fully-default (no useful signal)
+
+    Returned as {object_id: [run_dict, ...]}. Agent combines with shape text
+    to reason about character-range styling — pairs with `update_text_style`.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for s in flatten(shapes):
+        if s.kind != "text" or not s.runs or not s.object_id:
+            continue
+        if len(s.runs) == 1 and _is_default_run(s.runs[0]):
+            continue  # redundant; the slot value already encodes this
+        out[s.object_id] = [_run_to_dict(r) for r in s.runs]
+    return out
+
+
 def project(
     shapes: list[FlatShape],
     archetype: str,
@@ -350,6 +404,7 @@ def project(
     sub: SubTheme,
     mode: Mode = "clean",
     include_elements: bool = False,
+    include_styles: bool = False,
 ) -> dict[str, Any]:
     """Main entry. Returns a DSL dict ready for yaml.dump.
 
@@ -358,9 +413,21 @@ def project(
     callers that want to move icons. Default False to keep the read budget
     flat for text-only callers (the common case). Faithful mode always
     carries full per-element dicts regardless of this flag.
+
+    include_styles: if True, appends a top-level `_styles` channel mapping
+    object_id → list of runs, each with {text, font_family?, size_pt?, bold?,
+    italic?, color_hex?}. Use this to SEE existing character-range styling
+    before calling `update_text_style`. Adds ~30 tok/slide for styled shapes;
+    0 tok for shapes with uniform default styling. Default False preserves
+    the 150 tok/slide text-only budget.
     """
     if mode == "faithful":
-        return project_faithful(shapes, slide_id, notes, sub, archetype=archetype)
+        result = project_faithful(shapes, slide_id, notes, sub, archetype=archetype)
+        if include_styles:
+            styles = _projected_styles(shapes)
+            if styles:
+                result["_styles"] = styles
+        return result
 
     extractor = _CLEAN_EXTRACTORS.get(archetype)
     if extractor:
@@ -368,6 +435,10 @@ def project(
         if result is not None:
             if include_elements:
                 result["elements"] = _projected_elements(shapes)
+            if include_styles:
+                styles = _projected_styles(shapes)
+                if styles:
+                    result["_styles"] = styles
             return result
 
     # fall through to faithful; mark why
@@ -377,4 +448,8 @@ def project(
         f"no clean extractor for archetype '{archetype}'" if extractor is None
         else f"clean extractor for '{archetype}' rejected this slide's shape"
     )
+    if include_styles:
+        styles = _projected_styles(shapes)
+        if styles:
+            faithful["_styles"] = styles
     return faithful

@@ -42,7 +42,7 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `list_themes` / `list_archetypes` | Discover bundled + user themes / archetype YAMLs |
 | `list_deck_layouts` / `list_slides_by` | Archetype inventory + structural grep over a deck |
 | `get_deck_outline` | Whole-deck index, ~20 tok/slide |
-| `get_slide` | One slide as compact YAML; `mode=clean/faithful`, opt-in `include_elements` |
+| `get_slide` | One slide as compact YAML; `mode=clean/faithful`, opt-in `include_elements`, opt-in `include_styles` (see `rules/character-styling.md`) |
 | `search_deck` | Text substring search across slides |
 | `patch_slide` | Apply DSL patch — text edits + translation writes in one call |
 | `create_slide` | Create a new slide from archetype + semantic content; returns `thumbnail_url` + `slide_id`. Follow up with `render_thumbnail` for visual verification. |
@@ -59,7 +59,12 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `extract_theme_brief` | Brownfield: propose a brief from an existing deck's palette histogram. Does NOT commit. |
 | `render_thumbnail` | Render a slide as PNG and return as native MCP `ImageContent` |
 | `render_thumbnail_url` | Return the short-lived contentUrl only (for non-agent callers) |
-| `exec_batch_update` | Raw batchUpdate passthrough — ALWAYS `dry_run=True` on first call |
+| `update_text_style` | Character-level styling (bold/italic/color/size/font) on a range. Range: `all` / `{paragraph}` / `{chars}` / `{match}`. See `rules/character-styling.md`. |
+| `update_paragraph_style` | Paragraph-level styling (alignment/lineSpacing/indent/space). Same range language. See `rules/character-styling.md`. |
+| `propose_brief_variants` | Pure: N distinct-mood theme briefs from natural-language intent. Seeds variant selection. See `rules/variant-generation.md`. |
+| `generate_variants` | Render the same content_list under N briefs side-by-side. See `rules/variant-generation.md`. |
+| `lock_variant` | Commit one variant's brief + delete losers' slides. See `rules/variant-generation.md`. |
+| `exec_batch_update` | Raw batchUpdate passthrough — ALWAYS `dry_run=True` on first call. Now narrower: character styling moved to bespoke tools. |
 
 ## Workflow Guides
 
@@ -73,4 +78,6 @@ Read these before starting. Each rule doc is scoped to one axis of the workflow:
 - [rules/theme-hygiene.md](rules/theme-hygiene.md) — `audit_deck_colors` + `promote_to_theme`; the living-theme workflow
 - [rules/bidi-edit.md](rules/bidi-edit.md) — The see-and-move loop: `render_thumbnail` + `include_elements` + RELATIVE transforms
 - [rules/generate-from-intent.md](rules/generate-from-intent.md) — **Prompt → slides workflow:** `create_slide` primitive, archetype selection heuristic, plan→create→verify→iterate loop. Read visual-presentation.md FIRST.
-- [rules/escape-hatch.md](rules/escape-hatch.md) — `exec_batch_update` safely: `dry_run`, destructive denylist, audit log
+- [rules/character-styling.md](rules/character-styling.md) — **Typographic depth (v0.5.0):** `update_text_style` + `update_paragraph_style` + range language + `get_slide(include_styles=True)` discovery.
+- [rules/variant-generation.md](rules/variant-generation.md) — **Variant selection (v0.5.0):** propose → generate → render → lock workflow. For moody-but-underspecified intent.
+- [rules/escape-hatch.md](rules/escape-hatch.md) — `exec_batch_update` safely: `dry_run`, destructive denylist, audit log. Narrower in v0.5.0 — character styling moved to bespoke tools.

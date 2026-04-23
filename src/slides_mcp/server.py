@@ -40,6 +40,7 @@ from . import classify as classify_mod
 from . import create as create_mod
 from . import normalize as normalize_mod
 from . import projection as projection_mod
+from . import text_range as text_range_mod
 from . import theme as theme_mod
 from . import theme_brief as theme_brief_mod
 
@@ -133,6 +134,7 @@ def get_slide(
     sub_theme: str = "primary",
     mode: str = "clean",
     include_elements: bool = False,
+    include_styles: bool = False,
 ) -> dict[str, Any]:
     """Return one slide as compact YAML + metadata.
 
@@ -143,6 +145,12 @@ def get_slide(
           uses to move icons. Default False so text-only reads stay within
           the 150 tok/slide budget. Set True when the agent intends to
           reposition shapes.
+    include_styles: opt-in character-style channel. Adds a top-level `_styles`
+          map of {object_id: [runs]} where each run has {text, font_family?,
+          size_pt?, bold?, italic?, color_hex?}. Shapes with uniform default
+          styling are omitted (no signal). Set True when the agent intends to
+          call `update_text_style` and needs to see current styling to diff
+          against. Adds ~30 tok/slide on styled shapes; 0 for plain slides.
     """
     if mode not in ("clean", "faithful"):
         raise ValueError(f"mode must be 'clean' or 'faithful'; got {mode!r}")
@@ -155,6 +163,7 @@ def get_slide(
     dsl = projection_mod.project(
         shapes, archetype, slide_id, notes, sub,
         mode=mode, include_elements=include_elements,  # type: ignore[arg-type]
+        include_styles=include_styles,
     )
     return {
         "deck_id": deck_id,
@@ -1290,6 +1299,405 @@ def exec_batch_update(
         "request_kinds": kinds,
         "replies": replies,
     }
+
+
+# ------------------------------------------------------------------
+# Typographic depth — bespoke text + paragraph styling (v0.5.0)
+# ------------------------------------------------------------------
+
+
+def _resolve_text_range(
+    deck_id: str,
+    slide_id: str,
+    object_id: str,
+    range_spec: dict[str, Any] | str | None,
+) -> dict[str, Any]:
+    """Shared range resolver for update_text_style + update_paragraph_style.
+
+    Returns a Slides API textRange dict. 'all' / None short-circuits without
+    fetching the slide. Other modes fetch the shape text and delegate to
+    `text_range_mod.resolve_range` for paragraph/chars/match.
+    """
+    if range_spec is None or range_spec == "all":
+        return {"type": "ALL"}
+    page = slides_api.get_slide(deck_id, slide_id)
+    try:
+        text = text_range_mod.extract_shape_text(page, object_id)
+    except KeyError as e:
+        raise ValueError(str(e)) from e
+    return text_range_mod.resolve_range(text, range_spec)
+
+
+@mcp.tool()
+def update_text_style(
+    deck_url: str,
+    slide_id: str,
+    object_id: str,
+    style: dict[str, Any],
+    range: dict[str, Any] | str | None = None,
+    verify: str = "auto",
+) -> dict[str, Any]:
+    """Apply character-level styling (bold, italic, color, size, font, …) to a range
+    within a text-bearing shape.
+
+    Replaces the bespoke-escape-hatch pattern of agents hand-rolling
+    `updateTextStyle` requests with UTF-16 index math. Server resolves the range
+    from the shape's real text; agent describes intent semantically.
+
+    ## range language
+      - None or "all"              → entire text of the shape
+      - {"paragraph": N}           → Nth paragraph (0-indexed, split on "\\n")
+      - {"chars": [start, end]}    → UTF-16 code-unit indices, end exclusive
+      - {"match": "substring"}     → unique substring; ValueError on 0 or >1 hits
+
+    ## style subset (hex accepted; font size in pt)
+      - bool:  bold, italic, underline, strikethrough, smallCaps
+      - str:   fontFamily, baselineOffset (NONE | SUPERSCRIPT | SUBSCRIPT)
+      - num:   fontSize (pt)
+      - hex:   foregroundColor, backgroundColor  (e.g. "#E8612E")
+      - dict:  weightedFontFamily {fontFamily: str, weight: int}
+
+    ## verify
+      "auto" (default) / "always"  → include thumbnail_url in response
+      "never"                       → skip the thumbnail fetch
+
+    ## Example — emphasize the first phrase of a body shape
+      update_text_style(
+          deck_url, slide_id, object_id=body_box_id,
+          range={"match": "The problem"},
+          style={"bold": True, "fontSize": 28, "foregroundColor": "#E8612E"},
+      )
+
+    Returns {deck_id, slide_id, object_id, range_resolved, fields,
+             applied_request_count, thumbnail_url?}.
+    """
+    if not object_id:
+        raise ValueError("object_id required")
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    text_range = _resolve_text_range(deck_id, slide_id, object_id, range)
+    api_style, fields = text_range_mod.normalize_text_style(style)
+
+    req = {
+        "updateTextStyle": {
+            "objectId": object_id,
+            "style": api_style,
+            "textRange": text_range,
+            "fields": ",".join(fields),
+        }
+    }
+    slides_api.batch_update(deck_id, [req])
+
+    result: dict[str, Any] = {
+        "deck_id": deck_id,
+        "slide_id": slide_id,
+        "object_id": object_id,
+        "range_resolved": text_range,
+        "fields": fields,
+        "applied_request_count": 1,
+    }
+    if verify in ("auto", "always"):
+        result["thumbnail_url"] = slides_api.get_thumbnail(
+            deck_id, slide_id, size="MEDIUM"
+        )
+    return result
+
+
+# ------------------------------------------------------------------
+# Variant selection (v0.5.0 — B1/B2/B3): propose → generate → lock
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+def propose_brief_variants(
+    intent: str,
+    n: int = 3,
+) -> dict[str, Any]:
+    """Propose N distinct-mood theme-brief variants from a natural-language intent.
+
+    Pure function (no deck access) — returns briefs ready to pass into
+    `generate_variants` or `set_theme_brief`. Seeds the variant selection
+    workflow: agent calls this to get 2-5 moods, renders each via
+    `generate_variants`, user (or agent) picks the winner, agent calls
+    `lock_variant` to commit.
+
+    intent: free-text describing the presentation's context, audience, tone,
+      subject matter. Keyword matching is case-insensitive substring: mention
+      'enterprise' or 'b2b' to bias toward confident-enterprise moods; 'tech'
+      or 'data' toward minimalist-technical; 'warm' or 'human' toward organic
+      earth-tones; 'bold' or 'creative' toward high-contrast magazine; 'elegant'
+      or 'luxury' toward refined serif. With no matching keywords, the default
+      ordering (editorial, enterprise, tech) wins.
+
+    n: number of variants to return. Capped at the pool size (currently 6).
+      Defaults to 3 — the sweet spot for visual A/B/C selection.
+
+    Returns {variants: [brief, ...]}. Each brief is a fully-formed dict
+    suitable for set_theme_brief (palette, shape_language, numbering_style,
+    tone, image_prompt_style). No two returned briefs share a palette.accent
+    (distinctness invariant).
+    """
+    briefs = theme_brief_mod.propose_brief_variants(intent=intent, n=n)
+    return {"variants": briefs, "count": len(briefs), "intent": intent}
+
+
+@mcp.tool()
+def generate_variants(
+    deck_url: str,
+    content_list: list[dict[str, Any]],
+    briefs: list[dict[str, Any]],
+    variant_prefix: str = "v",
+) -> dict[str, Any]:
+    """Render N variants of the same content, each under a different theme brief.
+
+    The middle step of the variant selection workflow:
+
+        propose_brief_variants(intent, n=3)
+            → generate_variants(deck, content_list, briefs)   ← you are here
+            → render_thumbnail(each slide_id) to compare visually
+            → lock_variant(variant_id, manifest) to commit winner + delete losers
+
+    For each brief in `briefs`, this tool:
+      1. Calls set_theme_brief to swap the deck's meta-slide brief to `briefs[i]`
+      2. Creates every slide in `content_list` under that brief. Slide IDs are
+         `{variant_prefix}{i}_{suffix}` — e.g. `v0_cover`, `v1_cover`, `v2_cover`
+         for three variants of a cover.
+      3. Collects the slide_ids into a per-variant manifest.
+
+    content_list: list of slide specs. Each item:
+      {
+        "archetype": str,   # required — registered archetype name
+        "content": dict,    # required — slot-keyed content (see create_slide)
+        "slide_id": str?    # optional suffix. default "s0", "s1", ...
+      }
+
+    briefs: list of theme-brief dicts (from propose_brief_variants or hand-built).
+      Each must pass validate_brief — invalid briefs raise before any slide is
+      created.
+
+    variant_prefix: prefix for each variant's slide_ids. Default "v".
+
+    Returns a manifest:
+      {
+        "deck_id": str,
+        "variants": [
+          {"variant_id": "v0", "brief": {...}, "slide_ids": [...]},
+          ...
+        ],
+        "variant_prefix": str,
+        "total_slides_created": int,
+      }
+
+    Pass the WHOLE manifest into `lock_variant` when picking the winner.
+    The deck's meta-slide brief ends the loop at `briefs[-1]` (pre-lock state).
+
+    ## Failure mode (partial writes)
+    If a create_slide call mid-loop fails, the error propagates and the deck
+    is left with the slides created so far + whichever brief was last set.
+    Clean up by manually deleting stray slides OR by completing the loop
+    against a simpler content_list and then calling lock_variant to prune.
+    """
+    if not isinstance(content_list, list) or not content_list:
+        raise ValueError("content_list must be a non-empty list")
+    if not isinstance(briefs, list) or not briefs:
+        raise ValueError("briefs must be a non-empty list")
+
+    # Validate all briefs UP-FRONT so we fail before any write.
+    for i, brief in enumerate(briefs):
+        ok, errors = theme_brief_mod.validate_brief(brief)
+        if not ok:
+            raise ValueError(f"briefs[{i}] invalid: {'; '.join(errors)}")
+
+    # Validate content_list shape up-front.
+    for j, item in enumerate(content_list):
+        if not isinstance(item, dict) or "archetype" not in item or "content" not in item:
+            raise ValueError(
+                f"content_list[{j}] must be a dict with 'archetype' and 'content' keys"
+            )
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    variants: list[dict[str, Any]] = []
+    total_slides = 0
+
+    for i, brief in enumerate(briefs):
+        variant_id = f"{variant_prefix}{i}"
+        set_theme_brief(deck_url, brief)
+
+        slide_ids: list[str] = []
+        for j, item in enumerate(content_list):
+            suffix = item.get("slide_id") or f"s{j}"
+            full_slide_id = f"{variant_id}_{suffix}"
+            result = create_slide(
+                deck_url=deck_url,
+                archetype=item["archetype"],
+                content=item["content"],
+                slide_id=full_slide_id,
+                theme_brief=True,
+            )
+            slide_ids.append(result["slide_id"])
+            total_slides += 1
+
+        variants.append({
+            "variant_id": variant_id,
+            "brief": brief,
+            "slide_ids": slide_ids,
+        })
+
+    return {
+        "deck_id": deck_id,
+        "variants": variants,
+        "variant_prefix": variant_prefix,
+        "total_slides_created": total_slides,
+    }
+
+
+@mcp.tool()
+def lock_variant(
+    deck_url: str,
+    variant_id: str,
+    variants_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Commit one variant as the deck's theme; delete the losing variants' slides.
+
+    Terminal step of the generate-pick-lock workflow. Pass the manifest
+    returned by `generate_variants` + the variant_id you picked (e.g. after
+    the user viewed three rendered thumbnails).
+
+    Side effects (in order):
+      1. `set_theme_brief(deck_url, winner.brief)` — promotes winner's brief
+         into the deck's meta-slide (overwriting whatever the loop left).
+      2. `delete_slide` on every slide_id in every LOSING variant.
+
+    variants_manifest: the dict from generate_variants (must contain a
+      `variants` list with `variant_id`, `brief`, `slide_ids` per entry).
+    variant_id: the winning variant's id (e.g. "v1").
+
+    Returns {
+      deck_id, locked_variant_id, locked_brief,
+      kept_slide_ids, deleted_slide_count, deleted_slide_ids, warnings
+    }.
+    """
+    variants = variants_manifest.get("variants")
+    if not isinstance(variants, list) or not variants:
+        raise ValueError(
+            "variants_manifest.variants must be a non-empty list "
+            "(pass the output of generate_variants)"
+        )
+
+    winner = None
+    losers: list[dict[str, Any]] = []
+    for v in variants:
+        if v.get("variant_id") == variant_id:
+            winner = v
+        else:
+            losers.append(v)
+    if winner is None:
+        available = [v.get("variant_id") for v in variants]
+        raise ValueError(
+            f"variant_id {variant_id!r} not found in manifest; available: {available}"
+        )
+    if "brief" not in winner:
+        raise ValueError(f"winner variant {variant_id!r} has no 'brief' in manifest")
+
+    # 1. Promote winner's brief.
+    set_theme_brief(deck_url, winner["brief"])
+
+    # 2. Delete losers' slides. Continue past individual failures but report them.
+    deleted_slide_ids: list[str] = []
+    warnings: list[str] = []
+    for loser in losers:
+        for sid in loser.get("slide_ids") or []:
+            try:
+                delete_slide(deck_url=deck_url, slide_id=sid)
+                deleted_slide_ids.append(sid)
+            except Exception as e:  # noqa: BLE001 — report, don't abort
+                warnings.append(f"delete_slide({sid!r}) failed: {e}")
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    return {
+        "deck_id": deck_id,
+        "locked_variant_id": variant_id,
+        "locked_brief": winner["brief"],
+        "kept_slide_ids": list(winner.get("slide_ids") or []),
+        "deleted_slide_count": len(deleted_slide_ids),
+        "deleted_slide_ids": deleted_slide_ids,
+        "warnings": warnings,
+    }
+
+
+@mcp.tool()
+def update_paragraph_style(
+    deck_url: str,
+    slide_id: str,
+    object_id: str,
+    style: dict[str, Any],
+    range: dict[str, Any] | str | None = None,
+    verify: str = "auto",
+) -> dict[str, Any]:
+    """Apply paragraph-level styling (alignment, indent, line spacing, space above/below)
+    to paragraph(s) intersecting a range in a text-bearing shape.
+
+    Slides API applies paragraph style to every paragraph that overlaps the
+    range. In practice: pick whatever range is easiest (all / paragraph / match);
+    the style lands on the paragraph(s) the range touches.
+
+    ## range language — same as update_text_style
+      - None or "all"              → all paragraphs in the shape
+      - {"paragraph": N}           → Nth visible paragraph (blank separators skipped)
+      - {"chars": [start, end]}    → paragraphs overlapping UTF-16 range
+      - {"match": "substring"}     → paragraph containing the unique substring
+
+    ## style subset
+      - str enum: alignment (START|CENTER|END|JUSTIFIED),
+                  direction (LEFT_TO_RIGHT|RIGHT_TO_LEFT),
+                  spacingMode (NEVER_COLLAPSE|COLLAPSE_LISTS)
+      - pt number: indentStart, indentEnd, indentFirstLine, spaceAbove, spaceBelow
+      - % number:  lineSpacing (100 = single, 150 = 1.5×, 200 = double)
+
+    ## verify
+      "auto" (default) / "always"  → include thumbnail_url
+      "never"                       → skip thumbnail fetch
+
+    ## Example — center a quote paragraph with generous spacing
+      update_paragraph_style(
+          deck_url, slide_id, object_id=body_id,
+          range={"paragraph": 0},
+          style={"alignment": "CENTER", "lineSpacing": 150, "spaceAbove": 12},
+      )
+
+    Returns {deck_id, slide_id, object_id, range_resolved, fields,
+             applied_request_count, thumbnail_url?}.
+    """
+    if not object_id:
+        raise ValueError("object_id required")
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    text_range = _resolve_text_range(deck_id, slide_id, object_id, range)
+    api_style, fields = text_range_mod.normalize_paragraph_style(style)
+
+    req = {
+        "updateParagraphStyle": {
+            "objectId": object_id,
+            "style": api_style,
+            "textRange": text_range,
+            "fields": ",".join(fields),
+        }
+    }
+    slides_api.batch_update(deck_id, [req])
+
+    result: dict[str, Any] = {
+        "deck_id": deck_id,
+        "slide_id": slide_id,
+        "object_id": object_id,
+        "range_resolved": text_range,
+        "fields": fields,
+        "applied_request_count": 1,
+    }
+    if verify in ("auto", "always"):
+        result["thumbnail_url"] = slides_api.get_thumbnail(
+            deck_id, slide_id, size="MEDIUM"
+        )
+    return result
 
 
 def main() -> None:

@@ -1,6 +1,8 @@
 # The escape hatch — `exec_batch_update`
 
-For Slides API requests that no bespoke tool wraps (`updateTextStyle`, `insertTableRows`, `updateTableCellProperties`, `updatePageProperties`, etc.).
+For Slides API requests that no bespoke tool wraps (`insertTableRows`, `updateTableCellProperties`, `updatePageProperties`, deep master-slide edits, etc.).
+
+**Character styling (`updateTextStyle` / `updateParagraphStyle`) now has bespoke tools:** use `update_text_style` + `update_paragraph_style` (`rules/character-styling.md`). The escape hatch is for the remaining API surface where no bespoke wrapper exists.
 
 ## Safety protocol
 
@@ -74,42 +76,45 @@ Parse the index, inspect your `requests[3]`, fix.
 
 | Use `exec_batch_update` | Don't — use the bespoke tool |
 |-------------------------|------------------------------|
-| `updateTextStyle` (font, color, weight) | text CONTENT change → `patch_slide` |
-| `updateShapeProperties` (fill beyond theme) | new shape → `create_shape` |
-| Table operations (rows, cells, columns) | N/A |
-| Slide properties, master edits | N/A |
-| Bulk font-family changes across many objects | |
-| One-off operation that doesn't recur | |
+| Table operations (rows, cells, columns) | N/A — no bespoke wrapper |
+| Slide properties, master edits | N/A — no bespoke wrapper |
+| One-off Slides API kinds not in any bespoke tool | |
 | Anything with an async batch pattern | |
+| `updateShapeProperties` (fill beyond theme) | new shape → `create_shape` |
+| ~~`updateTextStyle` / `updateParagraphStyle`~~ | → `update_text_style` / `update_paragraph_style` (v0.5.0) |
+| ~~Bulk font-family changes~~ | → loop `update_text_style` per object_id with `range="all"` |
+| Text content change | → `patch_slide` |
 
-## Example: bulk title-font change
+## Example: insert a table row
 
 ```
-# 1. Find the slides
-slides = get_deck_outline(deck_url).slides
+requests = [{
+    "insertTableRows": {
+        "tableObjectId": table_id,
+        "cellLocation": {"rowIndex": 2, "columnIndex": 0},
+        "insertBelow": True,
+        "number": 1,
+    }
+}]
 
-# 2. For each, collect the title objectId
-requests = []
-for s in slides:
-    dsl = get_slide(deck_url, s.id).dsl_yaml
-    title_id = dsl["_object_ids"]["title"]
-    requests.append({
-      "updateTextStyle": {
-        "objectId": title_id,
-        "textRange": {"type": "ALL"},
-        "style": {"fontFamily": "Inter"},
-        "fields": "fontFamily",
-      }
-    })
-
-# 3. Dry-run
+# 1. Dry-run — preview kinds
 exec_batch_update(deck_url, requests=requests, dry_run=True)
-# Review. No destructive kinds? Good.
+# → kinds: ["insertTableRows"], no destructive hit
 
-# 4. Fire
+# 2. Fire
 exec_batch_update(deck_url, requests=requests, dry_run=False)
 ```
 
-## Wrappers?
+## Wrappers — what exists now
 
-`update_text_style` / `update_shape_fill` convenience wrappers are deliberately NOT built. The plan-advisor call (LOG-006) was: **ship the hatch first, watch real usage, build narrow wrappers matching observed patterns.** If a specific pattern recurs, file it as a follow-up; don't speculate-wrap.
+The plan-advisor rule (LOG-006) was **ship the hatch first, watch real usage,
+build narrow wrappers matching observed patterns.** That played out:
+
+- `updateTextStyle` usage was dominant enough to warrant a wrapper →
+  `update_text_style` (v0.5.0, `rules/character-styling.md`).
+- `updateParagraphStyle` followed the same path → `update_paragraph_style`.
+- Table cell / row / column operations remain escape-hatch-only; usage is
+  infrequent and the shape changes per case.
+
+If a new pattern recurs 3+ times across sessions, file it as a follow-up
+tool — don't speculate-wrap.

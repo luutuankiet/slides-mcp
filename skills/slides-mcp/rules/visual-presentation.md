@@ -3,6 +3,31 @@
 **Read this BEFORE generate-from-intent.md.** The rules below are the
 difference between a presentation and a markdown-rendered text doc.
 
+## The last mile — typography + variant selection (v0.5.0)
+
+The difference between a slide that reads as a DECK and a slide that reads as
+an export isn't raster imagery — it's **typographic depth** and **mood coherence**.
+Raster images (stock, AI-gen, logos) are the LONG mile; the placeholder
+`[IMAGE: prompt]` is the final deliverable for raster needs, not a stepping
+stone (Decision P).
+
+Two v0.5.0 tool families cover the real last mile:
+
+- **Character-range styling** — `update_text_style` + `update_paragraph_style`
+  (see `rules/character-styling.md`). Pop a word, italicize a quote, space
+  out a title. Vanilla primitives — fonts, colors, alignment — land the
+  editorial depth that image-heavy decks lean on but native-typography decks
+  get from structure alone.
+- **Variant selection** — `propose_brief_variants` + `generate_variants` +
+  `lock_variant` (see `rules/variant-generation.md`). When intent is moody
+  but underspecified, render 3 options, let the user pick, then commit.
+  Beats guessing a mood and shipping it blind.
+
+**Rule of thumb:** if your output is "functional but flat", look BEFORE raster.
+(a) Is the typographic hierarchy doing work? (b) Did you pick the mood, or
+pick the first brief you thought of? Typography and variant selection close
+that gap with no external deps, no API keys, no bytes to fetch.
+
 ## 1. MCP is a renderer, not a brand
 
 slides-mcp has NO opinion on what your slides should look like. It exposes a

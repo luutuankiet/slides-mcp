@@ -86,11 +86,13 @@ Installed files:
   rules/theme-coherence.md        NEW Cross-slide visual DNA via meta-slide brief (v0.3.0+)
   rules/visual-presentation.md    NEW Renderer-not-brand; shapes-first; structural variety (v0.3.0+)
   rules/generate-from-intent.md   NEW Prompt → slides workflow: plan → create → verify → iterate (v0.3.0+)
+  rules/character-styling.md      NEW Typographic depth: update_text_style + range language (v0.5.0+)
+  rules/variant-generation.md     NEW Variant selection: propose → generate → lock (v0.5.0+)
   rules/read-deck.md                  Outline, slide, search, list_slides_by
   rules/write-deck.md                 patch_slide: text, translation, _object_ids
   rules/theme-hygiene.md              audit_deck_colors + promote_to_theme
   rules/bidi-edit.md                  See-and-move: render_thumbnail + elements
-  rules/escape-hatch.md               exec_batch_update safely: dry_run, denylist
+  rules/escape-hatch.md               exec_batch_update safely: narrower in v0.5.0 (char styling moved to bespoke)
 
 Re-run after each slides-mcp upgrade — rules files evolve between versions.
 Agents reading a stale install miss new workflow guidance.
