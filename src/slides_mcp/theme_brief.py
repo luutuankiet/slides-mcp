@@ -26,6 +26,7 @@ Safety:
 """
 from __future__ import annotations
 
+import colorsys
 import copy as _copy_mod
 from typing import Any
 
@@ -46,11 +47,51 @@ WARNING_PREAMBLE: str = (
     "⚠ slides-mcp metadata — deleting this slide resets cross-slide theme coherence.\n"
     "This is a hidden slide (isSkipped=True) used by slides-mcp to store the deck's\n"
     "visual brief. Google Slides version history restores it if accidentally removed.\n"
+    "\n"
+    "Rebuild if deleted: scaffold_meta_brief(deck_url) proposes a brief from the\n"
+    "deck's existing palette; review and commit via set_theme_brief. One-shot for\n"
+    "high-confidence decks: scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True).\n"
+    "\n"
     "Edit via MCP tools (set_theme_brief, update_theme_brief), not by hand.\n"
     "---\n"
 )
 """Human-facing warning rendered above the YAML body so a dev opening the deck
 sees the explanation in situ."""
+
+SPEAKER_NOTES_TEXT: str = (
+    "═══ slides-mcp AGENT METADATA ═══\n"
+    "\n"
+    "This slide stores the theme brief (visual DNA: colors, fonts, shape language,\n"
+    "tone) that slides-mcp uses to keep the deck visually coherent. It's hidden\n"
+    "from presentations (isSkipped=True) but editable in the Slides UI.\n"
+    "\n"
+    "DO NOT DELETE. If deleted, the agent loses per-deck theme context and\n"
+    "future create_slide calls fall back to the default theme YAML.\n"
+    "\n"
+    "──── Rebuild instructions ────\n"
+    "If this slide was deleted:\n"
+    "  1. Try Google Slides' File → Version history → See version history\n"
+    "     (fastest path if deletion was recent).\n"
+    "  2. Otherwise, ask the slides-mcp agent to run:\n"
+    "       scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True)\n"
+    "     which proposes a brief from the deck's existing palette and commits\n"
+    "     it when confidence is high. For low-confidence decks, review the\n"
+    "     proposal before committing via set_theme_brief.\n"
+    "\n"
+    "──── Do not edit by hand ────\n"
+    "The body text box below carries the brief as YAML. Hand-editing can break\n"
+    "parse-back. Use these MCP tools instead:\n"
+    "  - get_theme_brief(deck_url)              — read active brief\n"
+    "  - set_theme_brief(deck_url, brief)       — wholesale replace\n"
+    "  - update_theme_brief(deck_url, changes)  — forward-only patch\n"
+    "  - extract_theme_brief(deck_url)          — brownfield propose\n"
+    "  - scaffold_meta_brief(deck_url)          — one-shot brownfield\n"
+    "  - apply_brief_and_restyle(deck_url, …)   — commit + retroactive repaint\n"
+)
+"""Text populated into the meta slide's speaker notes on creation. Humans who
+open the Notes pane in Google Slides see this — a more durable audience than
+the body text alone, since Notes survive slide content edits and give explicit
+rebuild commands."""
 
 SCHEMA_VERSION: int = 1
 """Brief schema version. Bump when the shape of the brief dict changes in a way
@@ -439,6 +480,33 @@ def build_update_brief_requests(
             "insertText": {
                 "objectId": body_box_id,
                 "text": body_content,
+                "insertionIndex": 0,
+            }
+        },
+    ]
+
+
+def build_notes_populate_requests(notes_object_id: str) -> list[dict[str, Any]]:
+    """Compose requests to populate a newly-created meta slide's speaker notes.
+
+    Emits a single `insertText` with SPEAKER_NOTES_TEXT at index 0. Assumes
+    the notes text placeholder is empty (fresh slide — the Google Slides API
+    auto-creates an empty notesPage for every new slide).
+
+    The notes placeholder objectId is discovered by the caller via
+    `server.py::_find_notes_placeholder_id` (walks
+    `slides[].slideProperties.notesPage.pageElements[]` for the BODY
+    placeholder).
+
+    Non-goal for v0.9.0: re-populating notes on an existing meta slide whose
+    notes already carry content. That would need a deleteText(ALL) prefix and
+    is deferred to v0.9.1+ once update semantics are locked.
+    """
+    return [
+        {
+            "insertText": {
+                "objectId": notes_object_id,
+                "text": SPEAKER_NOTES_TEXT,
                 "insertionIndex": 0,
             }
         },
@@ -1352,4 +1420,430 @@ def audit_brief_coherence(
             "shape_matching": shape_matching,
         },
         "next_action_hint": hint,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Live directive parsing (Scope A — tweak_brief)
+#
+# Turns a natural-language directive ("dial this warmer", "more editorial",
+# "darker surface") into a brief-delta dict that can feed straight into
+# `merge_brief` and then `set_theme_brief` / `update_theme_brief`.
+#
+# Deterministic + pure: same (current_brief, directive) always returns the same
+# delta. No LLM in the path. Heuristic-only — unresolved terms bubble up so
+# the caller can add a human-in-loop step for anything the rules don't cover.
+# ---------------------------------------------------------------------------
+
+# Trigger tables — substring match against the lowercased directive.
+_TEMPERATURE_WARMER: tuple[str, ...] = (
+    "warmer", "warm up", "hotter", "more red", "more orange",
+    "redder", "more warm",
+)
+_TEMPERATURE_COOLER: tuple[str, ...] = (
+    "cooler", "cool down", "colder", "more blue", "more cyan",
+    "more cold", "bluer",
+)
+_SATURATION_UP: tuple[str, ...] = (
+    "more saturated", "more vibrant", "punchier", "juicier", "richer",
+    "more vivid",
+)
+_SATURATION_DOWN: tuple[str, ...] = (
+    "more subdued", "more muted", "quieter", "desaturate", "softer color",
+    "softer colors", "calmer", "less saturated",
+)
+_SURFACE_DARKER: tuple[str, ...] = (
+    "darker surface", "deeper surface", "dimmer background", "darker background",
+    "darker bg", "night mode",
+)
+_SURFACE_LIGHTER: tuple[str, ...] = (
+    "lighter surface", "brighter background", "lighter background", "lighter bg",
+    "whiter surface", "day mode",
+)
+_SHAPE_SHARP: tuple[str, ...] = (
+    "sharper", "more angular", "angular", "blocky", "edged", "crisper edges",
+)
+_SHAPE_ROUNDED: tuple[str, ...] = (
+    "rounder", "softer shapes", "more rounded", "pilly", "bubblier", "rounded",
+)
+_FONTS_EDITORIAL: tuple[str, ...] = (
+    "more editorial", "serif-forward", "magazine", "editorial",
+    "more serif", "narrative feel",
+)
+_FONTS_TECH: tuple[str, ...] = (
+    "more tech", "more sans", "saas-forward", "geometric sans", "tech feel",
+    "dashboard-first", "dashboard first",
+)
+_FONTS_BOLD: tuple[str, ...] = (
+    "bolder font", "punchy font", "display font", "pitch-ready", "more bold",
+    "pitch type",
+)
+_FONTS_ELEGANT: tuple[str, ...] = (
+    "elegant fonts", "luxury fonts", "refined font", "timeless type",
+    "elegant type",
+)
+_NUMBERING_BOLD: tuple[str, ...] = (
+    "bolder numbering", "solid numbers", "chip numbers", "filled numbers",
+)
+_NUMBERING_OUTLINED: tuple[str, ...] = (
+    "outlined numbering", "ring numbers", "outline numbers",
+)
+_NUMBERING_DOT: tuple[str, ...] = (
+    "dot numbering", "minimal numbers", "dotty numbers",
+)
+_NUMBERING_HIDDEN: tuple[str, ...] = (
+    "hide numbers", "no numbers", "drop numbering", "remove numbering",
+)
+
+_ALL_TRIGGERS: tuple[tuple[str, ...], ...] = (
+    _TEMPERATURE_WARMER, _TEMPERATURE_COOLER,
+    _SATURATION_UP, _SATURATION_DOWN,
+    _SURFACE_DARKER, _SURFACE_LIGHTER,
+    _SHAPE_SHARP, _SHAPE_ROUNDED,
+    _FONTS_EDITORIAL, _FONTS_TECH, _FONTS_BOLD, _FONTS_ELEGANT,
+    _NUMBERING_BOLD, _NUMBERING_OUTLINED, _NUMBERING_DOT, _NUMBERING_HIDDEN,
+)
+
+_DIRECTIVE_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "and", "or", "to", "be", "more", "less", "with",
+    "dial", "it", "make", "i", "want", "please", "also", "try", "this",
+    "that", "just", "bit", "little", "keep", "feel", "feels", "same",
+    "but", "of", "for", "on", "in", "is", "are", "up", "down", "not",
+})
+
+# Hue targets + step sizes (fractional hue units, 0..1).
+_WARM_HUE_TARGET = 25.0 / 360.0   # orange
+_COOL_HUE_TARGET = 210.0 / 360.0  # azure
+_TEMP_HUE_STEP = 40.0 / 360.0     # max rotation per directive pass
+_SATURATION_FACTOR_UP = 1.35
+_SATURATION_FACTOR_DOWN = 0.65
+_VALUE_FACTOR_DARKER = 0.70
+_VALUE_FACTOR_LIGHTER = 1.35
+
+
+def _hex_to_hsv(hex_value: str) -> tuple[float, float, float] | None:
+    chans = _hex_channels(hex_value)
+    if chans is None:
+        return None
+    r, g, b = (c / 255.0 for c in chans)
+    return colorsys.rgb_to_hsv(r, g, b)
+
+
+def _hsv_to_hex(hsv: tuple[float, float, float]) -> str:
+    r, g, b = colorsys.hsv_to_rgb(*hsv)
+    return f"#{max(0, min(255, int(round(r * 255)))):02X}{max(0, min(255, int(round(g * 255)))):02X}{max(0, min(255, int(round(b * 255)))):02X}"
+
+
+def _rotate_toward(hex_value: str, target_h: float, max_step: float) -> str:
+    hsv = _hex_to_hsv(hex_value)
+    if hsv is None:
+        return hex_value
+    h, s, v = hsv
+    diff = (target_h - h) % 1.0
+    if diff > 0.5:
+        diff -= 1.0
+    step = max(-max_step, min(max_step, diff))
+    new_h = (h + step) % 1.0
+    return _hsv_to_hex((new_h, s, v))
+
+
+def _adjust_saturation(hex_value: str, factor: float) -> str:
+    hsv = _hex_to_hsv(hex_value)
+    if hsv is None:
+        return hex_value
+    h, s, v = hsv
+    return _hsv_to_hex((h, max(0.0, min(1.0, s * factor)), v))
+
+
+def _adjust_value(hex_value: str, factor: float) -> str:
+    hsv = _hex_to_hsv(hex_value)
+    if hsv is None:
+        return hex_value
+    h, s, v = hsv
+    # Light-lift hack: bumping value on a near-black surface still leaves it
+    # black. If the source is very dark AND we're lightening, push value
+    # toward 0.85 instead of a pure multiply.
+    if factor > 1.0 and v < 0.35:
+        new_v = max(v, 0.85)
+    elif factor < 1.0 and v > 0.75:
+        new_v = min(v, 0.25)
+    else:
+        new_v = max(0.0, min(1.0, v * factor))
+    return _hsv_to_hex((h, s, new_v))
+
+
+def _warmer(hex_value: str) -> str:
+    return _rotate_toward(hex_value, _WARM_HUE_TARGET, _TEMP_HUE_STEP)
+
+
+def _cooler(hex_value: str) -> str:
+    return _rotate_toward(hex_value, _COOL_HUE_TARGET, _TEMP_HUE_STEP)
+
+
+def _any_trigger_match(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(p in text for p in patterns)
+
+
+def _changed_field_paths(delta: dict[str, Any], prefix: str = "") -> list[str]:
+    """Flatten a delta dict into dotted field paths for display."""
+    out: list[str] = []
+    for k, v in delta.items():
+        path = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.extend(_changed_field_paths(v, path))
+        else:
+            out.append(path)
+    return out
+
+
+def compute_directive_delta(
+    current_brief: dict[str, Any],
+    directive: str,
+) -> dict[str, Any]:
+    """Parse a natural-language directive → delta dict for ``merge_brief``.
+
+    Rules (deterministic substring match on lowercased directive):
+        - "warmer" / "cooler"               → rotate accent + category_set hue
+        - "more saturated" / "more muted"   → scale accent + category_set S
+        - "darker surface" / "lighter surface" → shift palette.surface V
+        - "sharper" / "rounder"             → shape_language swap
+        - "more editorial" / "more tech" /
+          "bolder font" / "elegant"         → font_family swap via mood pairing
+        - "bolder/outlined/dot/hidden numbering" → numbering_style swap
+
+    Returns:
+        {
+          delta: dict,                 # merge-ready, safe for update_theme_brief
+          candidate_brief: dict,       # merge_brief(current, delta) with version stamped
+          matched_axes: list[str],     # e.g. ["accent_warmer", "font_editorial"]
+          unresolved_terms: list[str], # directive words the rule set did not handle
+          changed_fields: list[str],   # flat dotted paths for diff display
+          confidence: "high" | "medium" | "low",
+          rationale: list[str],        # one line per matched axis
+          warnings: list[str],
+        }
+
+    If the directive matches no axis, ``delta`` is empty and ``confidence`` is
+    ``low``. If the directive matches at least one axis but also contains
+    tokens the rules did not consume, ``confidence`` is ``medium`` — the
+    caller should consider a human-in-loop confirmation for the unhandled
+    terms.
+
+    This is a **pure function** — no network, no deck reads.
+    """
+    directive_lower = (directive or "").lower().strip()
+    warnings: list[str] = []
+
+    if not directive_lower:
+        return {
+            "delta": {},
+            "candidate_brief": _copy_mod.deepcopy(current_brief),
+            "matched_axes": [],
+            "unresolved_terms": [],
+            "changed_fields": [],
+            "confidence": "low",
+            "rationale": ["empty directive — nothing to compute"],
+            "warnings": warnings,
+        }
+
+    palette = (current_brief.get("palette") or {}) if isinstance(current_brief, dict) else {}
+    if not isinstance(palette, dict):
+        palette = {}
+    accent = palette.get("accent")
+    surface = palette.get("surface")
+    category_set = palette.get("category_set") or []
+    if not isinstance(category_set, list):
+        category_set = []
+
+    delta: dict[str, Any] = {}
+    palette_delta: dict[str, Any] = {}
+    matched_axes: list[str] = []
+    rationale: list[str] = []
+
+    # --- Temperature ------------------------------------------------------
+    if _any_trigger_match(directive_lower, _TEMPERATURE_WARMER) and accent:
+        new_accent = _warmer(accent)
+        if new_accent != accent:
+            palette_delta["accent"] = new_accent
+            matched_axes.append("accent_warmer")
+            rationale.append(f"accent warmed: {accent} → {new_accent}")
+            if category_set:
+                palette_delta["category_set"] = [_warmer(h) for h in category_set]
+                rationale.append(
+                    f"category_set warmed ({len(category_set)} slots)"
+                )
+    elif _any_trigger_match(directive_lower, _TEMPERATURE_COOLER) and accent:
+        new_accent = _cooler(accent)
+        if new_accent != accent:
+            palette_delta["accent"] = new_accent
+            matched_axes.append("accent_cooler")
+            rationale.append(f"accent cooled: {accent} → {new_accent}")
+            if category_set:
+                palette_delta["category_set"] = [_cooler(h) for h in category_set]
+                rationale.append(
+                    f"category_set cooled ({len(category_set)} slots)"
+                )
+
+    # --- Saturation -------------------------------------------------------
+    if _any_trigger_match(directive_lower, _SATURATION_UP) and accent:
+        src_accent = palette_delta.get("accent", accent)
+        new_accent = _adjust_saturation(src_accent, _SATURATION_FACTOR_UP)
+        if new_accent != src_accent:
+            palette_delta["accent"] = new_accent
+            matched_axes.append("accent_more_saturated")
+            rationale.append(
+                f"accent saturation +{int((_SATURATION_FACTOR_UP - 1) * 100)}%"
+            )
+            if category_set:
+                src_cs = palette_delta.get("category_set", category_set)
+                palette_delta["category_set"] = [
+                    _adjust_saturation(h, _SATURATION_FACTOR_UP) for h in src_cs
+                ]
+    elif _any_trigger_match(directive_lower, _SATURATION_DOWN) and accent:
+        src_accent = palette_delta.get("accent", accent)
+        new_accent = _adjust_saturation(src_accent, _SATURATION_FACTOR_DOWN)
+        if new_accent != src_accent:
+            palette_delta["accent"] = new_accent
+            matched_axes.append("accent_more_subdued")
+            rationale.append(
+                f"accent saturation {int((_SATURATION_FACTOR_DOWN - 1) * 100)}%"
+            )
+            if category_set:
+                src_cs = palette_delta.get("category_set", category_set)
+                palette_delta["category_set"] = [
+                    _adjust_saturation(h, _SATURATION_FACTOR_DOWN) for h in src_cs
+                ]
+
+    # --- Surface value ----------------------------------------------------
+    if _any_trigger_match(directive_lower, _SURFACE_DARKER) and surface:
+        new_surface = _adjust_value(surface, _VALUE_FACTOR_DARKER)
+        if new_surface != surface:
+            palette_delta["surface"] = new_surface
+            matched_axes.append("surface_darker")
+            rationale.append(f"surface darkened: {surface} → {new_surface}")
+    elif _any_trigger_match(directive_lower, _SURFACE_LIGHTER) and surface:
+        new_surface = _adjust_value(surface, _VALUE_FACTOR_LIGHTER)
+        if new_surface != surface:
+            palette_delta["surface"] = new_surface
+            matched_axes.append("surface_lighter")
+            rationale.append(f"surface lightened: {surface} → {new_surface}")
+
+    if palette_delta:
+        delta["palette"] = palette_delta
+
+    # --- Shape language ---------------------------------------------------
+    current_sl = (current_brief.get("shape_language") or "").lower() if isinstance(current_brief, dict) else ""
+    if _any_trigger_match(directive_lower, _SHAPE_SHARP) and current_sl != "sharp":
+        delta["shape_language"] = "sharp"
+        matched_axes.append("shape_sharp")
+        rationale.append(f"shape_language: {current_sl or 'unset'} → sharp")
+    elif _any_trigger_match(directive_lower, _SHAPE_ROUNDED) and current_sl != "rounded":
+        delta["shape_language"] = "rounded"
+        matched_axes.append("shape_rounded")
+        rationale.append(f"shape_language: {current_sl or 'unset'} → rounded")
+
+    # --- Font pairing -----------------------------------------------------
+    font_mood: str | None = None
+    if _any_trigger_match(directive_lower, _FONTS_EDITORIAL):
+        font_mood = "editorial"
+    elif _any_trigger_match(directive_lower, _FONTS_TECH):
+        font_mood = "tech"
+    elif _any_trigger_match(directive_lower, _FONTS_BOLD):
+        font_mood = "bold"
+    elif _any_trigger_match(directive_lower, _FONTS_ELEGANT):
+        font_mood = "elegant"
+
+    if font_mood:
+        current_ff = current_brief.get("font_family") or {} if isinstance(current_brief, dict) else {}
+        current_heading = current_ff.get("heading") if isinstance(current_ff, dict) else None
+        pairings = list_font_pairings(font_mood)
+        chosen = None
+        # prefer a pairing whose heading differs from the current one
+        for p in pairings:
+            if p.get("heading") != current_heading:
+                chosen = p
+                break
+        if chosen is None and pairings:
+            chosen = pairings[0]
+        if chosen:
+            delta["font_family"] = {
+                "heading": chosen["heading"],
+                "body": chosen["body"],
+            }
+            matched_axes.append(f"font_{font_mood}")
+            rationale.append(
+                f"font_family → {chosen['heading']} / {chosen['body']} "
+                f"({chosen.get('id')})"
+            )
+        else:
+            warnings.append(
+                f"no font pairing found for mood={font_mood!r} — font_family unchanged"
+            )
+
+    # --- Numbering style --------------------------------------------------
+    current_ns = (current_brief.get("numbering_style") or "").lower() if isinstance(current_brief, dict) else ""
+    if _any_trigger_match(directive_lower, _NUMBERING_BOLD) and current_ns != "bold":
+        delta["numbering_style"] = "bold"
+        matched_axes.append("numbering_bold")
+        rationale.append(f"numbering_style: {current_ns or 'unset'} → bold")
+    elif _any_trigger_match(directive_lower, _NUMBERING_OUTLINED) and current_ns != "outlined":
+        delta["numbering_style"] = "outlined"
+        matched_axes.append("numbering_outlined")
+        rationale.append(f"numbering_style: {current_ns or 'unset'} → outlined")
+    elif _any_trigger_match(directive_lower, _NUMBERING_DOT) and current_ns != "dot":
+        delta["numbering_style"] = "dot"
+        matched_axes.append("numbering_dot")
+        rationale.append(f"numbering_style: {current_ns or 'unset'} → dot")
+    elif _any_trigger_match(directive_lower, _NUMBERING_HIDDEN) and current_ns != "hidden":
+        delta["numbering_style"] = "hidden"
+        matched_axes.append("numbering_hidden")
+        rationale.append(f"numbering_style: {current_ns or 'unset'} → hidden")
+
+    # --- Unresolved terms (advisory) -------------------------------------
+    consumed_words: set[str] = set()
+    for group in _ALL_TRIGGERS:
+        for phrase in group:
+            for w in phrase.split():
+                consumed_words.add(w.lower())
+
+    unresolved_terms: list[str] = []
+    for tok in directive_lower.replace(",", " ").replace(".", " ").split():
+        tok_clean = tok.strip("'\"(){}[]!?;:")
+        if len(tok_clean) < 3 or tok_clean in _DIRECTIVE_STOPWORDS:
+            continue
+        if tok_clean in consumed_words:
+            continue
+        if tok_clean not in unresolved_terms:
+            unresolved_terms.append(tok_clean)
+
+    # --- Candidate brief + confidence ------------------------------------
+    candidate_brief = merge_brief(current_brief, delta) if delta else _copy_mod.deepcopy(current_brief)
+    # Stamp version for validator happiness
+    if "version" not in candidate_brief:
+        candidate_brief["version"] = SCHEMA_VERSION
+
+    ok, validation_errors = validate_brief(candidate_brief)
+    if not ok:
+        warnings.append(
+            "candidate brief fails validation: " + "; ".join(validation_errors)
+        )
+
+    changed_fields = _changed_field_paths(delta)
+
+    if matched_axes and not unresolved_terms:
+        confidence = "high"
+    elif matched_axes:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "delta": delta,
+        "candidate_brief": candidate_brief,
+        "matched_axes": matched_axes,
+        "unresolved_terms": unresolved_terms,
+        "changed_fields": changed_fields,
+        "confidence": confidence,
+        "rationale": rationale,
+        "warnings": warnings,
     }

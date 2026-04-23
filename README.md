@@ -292,6 +292,7 @@ sequenceDiagram
 | `set_theme_brief(deck_url, brief)` | Create or replace the brief. Appends a hidden `isSkipped` meta-slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. |
 | `update_theme_brief(deck_url, changes)` | Forward-only deep-merge patch — future slides pick up the change, existing slides untouched. |
 | `extract_theme_brief(deck_url)` | Brownfield: propose a brief from an existing deck's dominant palette + shape topology. Does NOT commit — agent reviews with user, tweaks, commits via `set_theme_brief`. |
+| `scaffold_meta_brief(deck_url, auto_commit_if_high_confidence?)` | **v0.9.0 brownfield-first entry.** One-shot: detects existing / absent / corrupted meta, extracts a proposal from the palette, optionally auto-commits when confidence is high. Collapses the `get → extract → review → set` 3-call dance. On commit, the new meta slide's marker, body, AND speaker notes are populated with rebuild instructions — humans who later find the hidden slide have context + recovery commands in situ. |
 
 ### Brownfield + coherence (v0.6.0 / v0.7.0)
 

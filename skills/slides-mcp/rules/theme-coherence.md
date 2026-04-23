@@ -54,14 +54,15 @@ gatekeeper. Pass overrides when the slide genuinely needs a different accent
 (a "danger" column in red, a dark-mode fullbleed cover, etc.). Omit them
 everywhere else and the brief keeps the deck coherent.
 
-## The 4 brief tools
+## The 5 brief tools
 
 | Tool | Purpose |
 |---|---|
 | `get_theme_brief(deck_url)` | Read the active brief. Returns `{brief, slide_id, status}`. `status: "absent"` when the deck has no meta-slide yet. |
-| `set_theme_brief(deck_url, brief)` | Create (first time) or replace the brief on the deck. Appends a hidden (`isSkipped`) slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. Returns the meta-slide `slide_id`. |
+| `set_theme_brief(deck_url, brief)` | Create (first time) or replace the brief on the deck. Appends a hidden (`isSkipped`) slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. Returns the meta-slide `slide_id`. v0.9.0+ also populates speaker notes with rebuild instructions. |
 | `update_theme_brief(deck_url, changes)` | **Forward-only** deep-merge patch. Existing slides untouched — future `create_slide` calls see the amended brief. |
 | `extract_theme_brief(deck_url)` | **Brownfield.** Audit an existing deck (Joon-style deck without a brief), return a proposed brief with evidence histograms. Does NOT commit — agent reviews with user, tweaks, then calls `set_theme_brief`. |
+| `scaffold_meta_brief(deck_url, auto_commit_if_high_confidence?)` | **v0.9.0 brownfield-first entry.** One-shot: detects existing / absent / corrupted meta, extracts a proposal, optionally auto-commits when `confidence == "high"`. Collapses the `get → extract → review → set` dance for the dominant brownfield entry mode. Prefer over the legacy 3-call path when onboarding a deck. |
 
 ## Workflow — greenfield (new deck, user gives intent)
 
@@ -91,20 +92,30 @@ everywhere else and the brief keeps the deck coherent.
 
 ## Workflow — brownfield (existing deck inherited / imported)
 
+**v0.9.0 fast path — `scaffold_meta_brief`** (preferred for most decks):
+
 ```
-1. get_theme_brief(deck_url)
-     → status: "absent"
+1. scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=False)
+     → status: "exists" | "proposed"   (auto-skips to greenfield step 4+
+                                         when "exists")
 
-2. extract_theme_brief(deck_url)
-     → proposed_brief + evidence histograms + confidence rating
+2. If "proposed":
+     a. Present proposed_brief + evidence + confidence to user
+     b. User tweaks OR accepts
+     c. If accepted as-is + confidence was "high": re-run scaffold with
+        auto_commit_if_high_confidence=True to commit in one call
+     d. Else: call set_theme_brief(deck_url, brief_or_tweaked) to persist
 
-3. Present proposal to user with the evidence:
-     "Based on 48 slides: surface navy (#111335), accent orange (#EE5619).
-      Top fills: [...]. Adjust anything?"
+3. From here on: same as greenfield step 4+
+```
 
-4. User tweaks → agent amends locally, then:
-     set_theme_brief(deck_url, tweaked_brief)
+**Legacy 3-call path** (explicit per-step control; still supported):
 
+```
+1. get_theme_brief(deck_url)             → status: "absent"
+2. extract_theme_brief(deck_url)         → proposed_brief + evidence
+3. (user review)
+4. set_theme_brief(deck_url, brief)      → commits; populates notes
 5. From here on: same as greenfield step 4+
 ```
 
@@ -140,13 +151,29 @@ false when you expected the brief to drive the palette, check:
 
 ## Deletion safety — what if someone removes the meta-slide?
 
-- The meta-slide title carries a literal `DO NOT DELETE` warning.
-- Body text carries a visible warning preamble.
-- `isSkipped=True` hides it from presentation mode — devs editing the deck
-  see it but it doesn't appear in the actual presentation.
-- If it's deleted anyway: Google Slides version history restores it. The
-  agent also degrades gracefully — `create_slide` without a brief falls
-  back to theme YAML (pre-Phase-2 behavior). No hard failure.
+**Durability layers (v0.9.0):**
+
+- **Title marker** — the meta-slide title carries a literal `DO NOT DELETE`
+  warning, rendered in 20pt bold red.
+- **Body preamble** — visible warning + `scaffold_meta_brief` rebuild command.
+- **Speaker notes** — v0.9.0+ populates the Notes pane with a longer-form
+  explanation + rebuild steps + the full MCP tool list. Humans who open
+  the Notes pane get full context without needing external docs.
+- **`isSkipped=True`** — hidden from presentation mode; devs editing the
+  deck see it but it doesn't appear in the actual show.
+
+**If it's deleted anyway:**
+
+1. **Google Slides version history** restores it — fastest path if deletion
+   was recent (mentioned in both body preamble and speaker notes).
+2. **Rebuild via MCP**:
+   `scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True)`
+   proposes a brief from the deck's existing palette and commits when
+   confidence is high. Low-confidence decks get a proposal-only response
+   for user review before committing.
+3. **Graceful degradation** — `create_slide` without a brief falls back to
+   theme YAML (pre-Phase-2 behavior). No hard failure: deck creation keeps
+   working while you scaffold a new brief.
 
 ## Anti-patterns
 

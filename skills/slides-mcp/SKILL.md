@@ -61,6 +61,7 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `set_theme_brief` | Create / replace the deck's theme brief. Appends a hidden `isSkipped` meta-slide. |
 | `update_theme_brief` | Forward-only deep-merge patch on the brief. Existing slides untouched. |
 | `extract_theme_brief` | Brownfield: propose a brief from an existing deck's palette histogram. Does NOT commit. |
+| `scaffold_meta_brief` | **v0.9.0 brownfield-first entry.** One-shot: detects existing / absent / corrupted meta, proposes from palette, optionally auto-commits when `confidence == "high"`. Collapses the `get → extract → set` dance. Commits populate speaker notes on the meta slide with rebuild instructions (durability). See `rules/theme-coherence.md`. |
 | `render_thumbnail` | Render a slide as PNG and return as native MCP `ImageContent` |
 | `render_thumbnail_url` | Return the short-lived contentUrl only (for non-agent callers) |
 | `update_text_style` | Character-level styling (bold/italic/color/size/font) on a range. Range: `all` / `{paragraph}` / `{chars}` / `{match}`. See `rules/character-styling.md`. |
@@ -75,6 +76,14 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `list_font_pairings` | **v0.7.0.** Curated Google Fonts pairings, optional mood filter. Seeds `brief.font_family` axis. |
 | `audit_brief_coherence` | **v0.7.0.** Single 0..1 score + drift breakdown + per-slide fix hints. Pre-ship gate. See `rules/theme-discipline.md`. |
 | `orient_to_deck` | **v0.7.0.** Composite onboarding: brief + coherence + archetype histogram + dominant font + outline in one call. First move on any brownfield deck. See `rules/theme-discipline.md`. |
+| `tweak_brief` | **v0.8.0.** Natural-language directive → brief-delta + validated candidate. Six heuristic axes: warmer/cooler, saturation, surface value, shape_language, font pairing (editorial/tech/bold/elegant), numbering. `unresolved_terms` surfaces what the rules didn't match. Pure computation — no deck writes. Requires an existing meta-slide. |
+| `preview_brief_tweak` | **v0.8.0.** Writes **actual sample slides** into the deck under a candidate brief so the HUMAN opens Google Slides and picks. Compares to the current brief side-by-side when one exists. Meta restored at end. THIS is the human approval gate — PIL swatches are agent-side-only. |
+| `apply_brief_and_restyle` | **v0.8.0.** One-call commit + repaint. Pass `brief=` (full replacement) OR `delta=` (merged into current). Forwards to set_theme_brief + restyle_slides with `normalize_fonts=True` default. `confirm_destructive=True` required. |
+| `list_catalog_briefs` | **v0.8.0.** List user's portable brief library at `$XDG_CONFIG_HOME/slides-mcp/briefs/` with optional `mood` filter. Metadata only — use `use_catalog_brief` to fetch + apply. |
+| `save_brief_to_catalog` | **v0.8.0.** Save the deck's active brief (or an explicit `brief=` dict) to the catalog with a human-readable `name` + `mood_keywords`. `overwrite=True` replaces in place. |
+| `use_catalog_brief` | **v0.8.0.** Copy a catalog entry into a deck's meta-slide via `set_theme_brief`. Does NOT repaint — pair with `apply_brief_and_restyle` if you also want existing slides rewritten. |
+| `export_brief` | **v0.8.0.** Return the deck's brief as a portable YAML string + dict. Pairs with `import_brief` for deck-to-deck transfer or out-of-band sharing. |
+| `import_brief` | **v0.8.0.** Commit a brief parsed from a YAML string or file path to the deck's meta-slide. Accepts bare brief OR catalog-envelope shape. Pair with `apply_brief_and_restyle` to repaint. |
 | `exec_batch_update` | Raw batchUpdate passthrough — ALWAYS `dry_run=True` on first call. Now narrower: character styling moved to bespoke tools. |
 
 ## Workflow Guides
@@ -95,4 +104,5 @@ Read these before starting. Each rule doc is scoped to one axis of the workflow:
 - [rules/icons.md](rules/icons.md) — **Vanilla icons (v0.6.0):** `list_icons` + `create_icon` — 30+ shape-composed icons, theme-color native. Use in pill cards, heroes, flow diagrams.
 - [rules/preview-workflow.md](rules/preview-workflow.md) — **Approve before you commit (v0.7.0):** `render_brief_swatch` + `_grid` + `preview_archetype` + `render_deck_contact_sheet`. Zero-write preview primitives.
 - [rules/theme-discipline.md](rules/theme-discipline.md) — **Theme discipline (v0.7.0):** prescriptive greenfield → brownfield → ship workflow. `orient_to_deck` + `audit_brief_coherence` + when per-call hex overrides are justified.
+- [rules/live-iteration-and-catalog.md](rules/live-iteration-and-catalog.md) — **Live iteration + catalog (v0.8.0):** `tweak_brief` → `preview_brief_tweak` → `apply_brief_and_restyle` loop + portable brief library + export/import.
 - [rules/escape-hatch.md](rules/escape-hatch.md) — `exec_batch_update` safely: `dry_run`, destructive denylist, audit log. Narrower in v0.5.0 — character styling moved to bespoke tools.

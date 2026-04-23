@@ -36,6 +36,7 @@ from mcp.server.fastmcp.utilities.types import Image
 from . import archetypes as archetype_reg
 from . import audit as audit_mod
 from . import auth, slides_api
+from . import catalog as catalog_mod
 from . import classify as classify_mod
 from . import create as create_mod
 from . import icons as icons_mod
@@ -1514,6 +1515,76 @@ def _deck_dimensions_in(deck_id: str) -> tuple[float, float]:
     return (w_emu / _EMU_PER_INCH, h_emu / _EMU_PER_INCH)
 
 
+def _find_notes_placeholder_id(
+    prez: dict[str, Any], slide_id: str
+) -> str | None:
+    """Find the speaker-notes BODY placeholder objectId on a given slide.
+
+    Google Slides auto-creates a notesPage for every slide; its body
+    placeholder is where speaker notes live. Walks
+    ``slides[].slideProperties.notesPage.pageElements`` for a shape with
+    ``placeholder.type == "BODY"``. Falls back to the first placeholder-bearing
+    pageElement if BODY isn't explicitly typed.
+
+    Returns None if no usable notes placeholder is found — callers should
+    gracefully skip notes population in that case (meta slide still valid).
+    """
+    for slide in prez.get("slides", []) or []:
+        if slide.get("objectId") != slide_id:
+            continue
+        notes_page = (slide.get("slideProperties") or {}).get("notesPage") or {}
+        fallback_id: str | None = None
+        for element in notes_page.get("pageElements", []) or []:
+            shape = element.get("shape") or {}
+            placeholder = shape.get("placeholder") or {}
+            ptype = placeholder.get("type")
+            obj_id = element.get("objectId")
+            if ptype == "BODY":
+                return obj_id
+            if placeholder and fallback_id is None:
+                fallback_id = obj_id
+        return fallback_id
+    return None
+
+
+def _populate_meta_slide_notes(
+    deck_id: str, meta_slide_id: str
+) -> list[str]:
+    """Best-effort populate the meta slide's speaker notes.
+
+    Fetches the notesPage BODY placeholder id for ``meta_slide_id``, then
+    issues an insertText batchUpdate with SPEAKER_NOTES_TEXT. Any failure
+    (missing placeholder, API error) returns a warning string so the caller
+    can surface it without failing meta creation itself — notes are a
+    durability layer, not a correctness requirement.
+
+    Returns a list of warning strings (empty on success).
+    """
+    warnings: list[str] = []
+    try:
+        prez = slides_api.get_presentation(
+            deck_id,
+            fields=(
+                "slides(objectId,slideProperties.notesPage.pageElements("
+                "objectId,shape.placeholder))"
+            ),
+        )
+        notes_id = _find_notes_placeholder_id(prez, meta_slide_id)
+        if not notes_id:
+            warnings.append(
+                "speaker notes placeholder not found on new meta slide; "
+                "notes left empty (meta slide body still carries warning preamble)"
+            )
+            return warnings
+        notes_reqs = theme_brief_mod.build_notes_populate_requests(notes_id)
+        slides_api.batch_update(deck_id, notes_reqs)
+    except Exception as exc:  # noqa: BLE001 — best-effort, don't fail meta creation
+        warnings.append(
+            f"speaker notes not populated: {type(exc).__name__}: {exc}"
+        )
+    return warnings
+
+
 @mcp.tool()
 def get_theme_brief(deck_url: str) -> dict[str, Any]:
     """Read the active theme brief from the deck's hidden meta-slide, if any.
@@ -1636,13 +1707,16 @@ def set_theme_brief(
         insertion_index=insertion_index,
     )
     slides_api.batch_update(deck_id, reqs)
+    # Durability: populate speaker notes with rebuild instructions.
+    # Best-effort — any failure surfaces as a warning, doesn't fail meta creation.
+    notes_warnings = _populate_meta_slide_notes(deck_id, slide_id)
     return {
         "deck_id": deck_id,
         "slide_id": slide_id,
         "brief": brief,
         "action": "created",
         "applied_request_count": len(reqs),
-        "warnings": [],
+        "warnings": notes_warnings,
     }
 
 
@@ -1685,6 +1759,115 @@ def extract_theme_brief(deck_url: str) -> dict[str, Any]:
             "review proposed_brief with user, tweak as needed, then call "
             "set_theme_brief(deck_url, brief) to persist. Brief NOT yet committed."
         ),
+    }
+
+
+@mcp.tool()
+def scaffold_meta_brief(
+    deck_url: str,
+    auto_commit_if_high_confidence: bool = False,
+) -> dict[str, Any]:
+    """Brownfield one-shot: ensure the deck has a theme brief, in a single call.
+
+    Most decks the agent opens are BROWNFIELD — they already exist with colors,
+    text, fonts, but no meta-slide. The legacy 3-call dance
+    (get_theme_brief → extract_theme_brief → set_theme_brief) forces a human
+    review loop for every deck. ``scaffold_meta_brief`` collapses it:
+
+      1. If the deck already has a parseable brief → returns ``status: "exists"``.
+      2. If absent (or corrupted meta): extracts a proposal from the deck's
+         existing palette + shape topology.
+         - ``auto_commit_if_high_confidence=True`` AND ``confidence == "high"``:
+           commits via set_theme_brief → ``status: "created"``. The new meta
+           slide's marker, body, AND speaker notes are populated — humans who
+           find the hidden slide later have context + rebuild instructions.
+         - Otherwise: returns ``status: "proposed"`` with the proposed brief
+           and evidence. Caller reviews with user, then commits via
+           set_theme_brief(deck_url, brief).
+
+    This is the brownfield-first entry point. Use this over
+    extract_theme_brief + set_theme_brief when you want durability + scaffold
+    in one shot.
+
+    Args:
+        deck_url: standard Google Slides URL
+        auto_commit_if_high_confidence: when True, proposals with
+            ``confidence == "high"`` commit automatically. Default False for
+            safety — the agent should review before committing on unfamiliar
+            decks. Confidence is "high" when the extraction saw ≥3 slides
+            and ≥8 distinct fill colors, indicating a well-established
+            visual identity.
+
+    Returns:
+        deck_id: str
+        status: "exists" | "created" | "proposed"
+        slide_id: str | None   (None when status == "proposed")
+        brief: dict            (existing, created, or proposed)
+        proposal: dict | None  ({evidence, confidence}; None when status == "exists")
+        next_step_hint: str
+        warnings: list[str]    (non-empty when notes population had issues)
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+
+    # Path 1: meta exists and parses → nothing to do.
+    if meta is not None:
+        existing = theme_brief_mod.parse_brief_body(meta["body_text"])
+        if existing is not None:
+            return {
+                "deck_id": deck_id,
+                "status": "exists",
+                "slide_id": meta["slide_id"],
+                "brief": existing,
+                "proposal": None,
+                "next_step_hint": (
+                    "deck already has a theme brief — no action taken. Use "
+                    "update_theme_brief for forward-only edits, or "
+                    "apply_brief_and_restyle to repaint existing slides."
+                ),
+                "warnings": [],
+            }
+        # meta found but body unparseable → treat as "needs repair" (extract fresh).
+
+    # Path 2: absent or corrupted → extract a proposal.
+    extraction = theme_brief_mod.extract_brief_from_prez(prez)
+    proposed = extraction["proposed_brief"]
+    confidence = extraction["confidence"]
+    evidence = extraction["evidence"]
+
+    if auto_commit_if_high_confidence and confidence == "high":
+        # Commit via set_theme_brief (which also populates speaker notes).
+        committed = set_theme_brief(deck_url, proposed)
+        return {
+            "deck_id": deck_id,
+            "status": "created",
+            "slide_id": committed["slide_id"],
+            "brief": proposed,
+            "proposal": {"evidence": evidence, "confidence": confidence},
+            "next_step_hint": (
+                "meta slide created with a high-confidence brief extracted "
+                "from the deck. Review the deck visually; tweak via "
+                "update_theme_brief if needed, or apply_brief_and_restyle "
+                "to repaint existing slides with the new brief."
+            ),
+            "warnings": list(committed.get("warnings", [])),
+        }
+
+    return {
+        "deck_id": deck_id,
+        "status": "proposed",
+        "slide_id": None,
+        "brief": proposed,
+        "proposal": {"evidence": evidence, "confidence": confidence},
+        "next_step_hint": (
+            f"proposal drafted (confidence={confidence!r}) but NOT committed. "
+            "Review with user, then call set_theme_brief(deck_url, brief) to "
+            "persist. Or re-run scaffold_meta_brief with "
+            "auto_commit_if_high_confidence=True to auto-commit when "
+            "confidence is 'high'."
+        ),
+        "warnings": [],
     }
 
 
@@ -2621,6 +2804,718 @@ def render_brief_swatch_grid(briefs: list[dict[str, Any]]) -> Image:
     """
     png_bytes = swatch_mod.render_swatch_grid(briefs)
     return Image(data=png_bytes, format="png")
+
+
+@mcp.tool()
+def tweak_brief(
+    deck_url: str,
+    directive: str,
+) -> dict[str, Any]:
+    """Natural-language directive → delta against the deck's active brief.
+
+    Reads the deck's current theme brief, parses ``directive`` through the
+    heuristic axis rules, and returns the **computed delta + candidate
+    brief** — without writing anything. The caller is expected to:
+
+      1. Inspect ``matched_axes`` / ``unresolved_terms`` / ``confidence``.
+      2. Call ``preview_brief_tweak(deck_url, candidate_brief=candidate_brief)``
+         — this writes 2-4 actual sample slides into the deck under the
+         candidate brief (with the current brief side-by-side when one exists)
+         so the HUMAN opens Google Slides and picks by eye. The meta-slide
+         is restored at the end — preview is non-persistent.
+      3. If approved, commit with ``apply_brief_and_restyle(deck_url,
+         brief=candidate, confirm_destructive=True)`` — repaints every
+         existing slide. Remember to delete the tweak_preview_* slides
+         afterward (delete_slide, one per id).
+
+    Supported axes (heuristic, substring match on the lowercased directive):
+      - "warmer" / "cooler"                   → rotate accent + category_set hue
+      - "more saturated" / "more muted"       → scale accent + category_set S
+      - "darker surface" / "lighter surface"  → shift palette.surface V
+      - "sharper" / "rounder"                 → shape_language swap
+      - "more editorial" / "more tech" /
+        "bolder font" / "elegant"             → font_family swap via pairing
+      - "bolder/outlined/dot/hidden numbering" → numbering_style swap
+
+    Anything outside these axes lands in ``unresolved_terms`` — the agent
+    should surface those to the user rather than silently over-apply.
+
+    Returns ``{deck_id, directive, current_brief, delta, candidate_brief,
+    matched_axes, unresolved_terms, changed_fields, confidence, rationale,
+    warnings, next_step_hint}``.
+
+    Raises FileNotFoundError if the deck has no theme brief. Call
+    ``set_theme_brief`` or ``extract_theme_brief`` first.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+    if meta is None:
+        raise FileNotFoundError(
+            "no theme-brief meta-slide on this deck. Brownfield flow: call "
+            "extract_theme_brief(deck_url) to propose a brief from the "
+            "existing deck, review it, then set_theme_brief(deck_url, brief) "
+            "to create the hidden meta-slide — THEN tweak_brief works."
+        )
+    current_brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+    if current_brief is None:
+        raise FileNotFoundError(
+            "meta-slide found but body did not parse as a brief; call "
+            "set_theme_brief to repair before tweaking."
+        )
+
+    result = theme_brief_mod.compute_directive_delta(current_brief, directive)
+
+    confidence = result["confidence"]
+    if confidence == "high":
+        hint = (
+            "preview_brief_tweak(deck_url, candidate_brief=candidate_brief) "
+            "to write sample slides into the deck for HUMAN preview, then "
+            "apply_brief_and_restyle(deck_url, brief=candidate_brief, "
+            "confirm_destructive=True) to commit + repaint — remember to "
+            "delete the tweak_preview_* slides after the human picks."
+        )
+    elif confidence == "medium":
+        hint = (
+            "directive partially recognised — unresolved_terms may need a "
+            "human-in-loop clarification. If you still want to proceed, call "
+            "preview_brief_tweak to drop sample slides into the deck so the "
+            "human can eyeball before apply_brief_and_restyle."
+        )
+    else:
+        hint = (
+            "directive did not match any axis; try rewording with one of "
+            "the supported phrases (warmer/cooler, more saturated/muted, "
+            "darker/lighter surface, sharper/rounder, more editorial/tech, "
+            "bolder/outlined/dot/hidden numbering)"
+        )
+
+    return {
+        "deck_id": deck_id,
+        "directive": directive,
+        "current_brief": current_brief,
+        "delta": result["delta"],
+        "candidate_brief": result["candidate_brief"],
+        "matched_axes": result["matched_axes"],
+        "unresolved_terms": result["unresolved_terms"],
+        "changed_fields": result["changed_fields"],
+        "confidence": confidence,
+        "rationale": result["rationale"],
+        "warnings": result["warnings"],
+        "next_step_hint": hint,
+    }
+
+
+@mcp.tool()
+def apply_brief_and_restyle(
+    deck_url: str,
+    brief: dict[str, Any] | None = None,
+    delta: dict[str, Any] | None = None,
+    slide_ids: list[str] | str = "all",
+    normalize_fonts: bool = True,
+    confirm_destructive: bool = False,
+) -> dict[str, Any]:
+    """Commit brief (or merge delta) + repaint existing slides — one call.
+
+    Collapses the old two-step ceremony::
+
+        # BEFORE (two calls, two verifies, no lineage)
+        update_theme_brief(deck_url, changes=delta)
+        restyle_slides(deck_url, normalize_fonts=True, confirm_destructive=True)
+
+        # AFTER (one call, unified response)
+        apply_brief_and_restyle(deck_url, delta=delta,
+                                normalize_fonts=True,
+                                confirm_destructive=True)
+
+    Pass **exactly one** of:
+      - ``brief``: full brief dict → wholesale replacement (like set_theme_brief).
+      - ``delta``: partial changes dict → deep-merged into current brief
+        (like update_theme_brief). Requires an existing meta-slide.
+
+    ``slide_ids``: list of slide IDs, or the literal ``"all"`` to restyle every
+        non-meta slide.
+
+    ``normalize_fonts``: forwarded to restyle_slides. Default **True** here
+        because the common "apply" case includes a font repaint — the brief's
+        ``font_family`` axis only takes effect on existing slides when this
+        is True.
+
+    ``confirm_destructive``: required True. restyle_slides overwrites per-call
+        hex that may have been passed at create_slide time.
+
+    Returns::
+
+        {
+          deck_id, meta_slide_id, brief (committed),
+          action: "created" | "updated",
+          restyle: {
+            restyled_slide_ids, skipped_slide_ids, total_rewrites,
+            per_slide, applied_request_count, thumbnails,
+          },
+          warnings,
+        }
+
+    Raises:
+      - ValueError if neither or both of ``brief``/``delta`` are given, if
+        ``confirm_destructive`` is False, or if the final brief fails validation.
+      - FileNotFoundError if ``delta`` is given but no meta-slide exists
+        to merge into.
+    """
+    if (brief is None) == (delta is None):
+        raise ValueError(
+            "apply_brief_and_restyle requires exactly one of `brief` "
+            "(wholesale replacement) or `delta` (partial merge). Got "
+            + ("both" if brief is not None else "neither")
+        )
+    if not confirm_destructive:
+        raise ValueError(
+            "apply_brief_and_restyle repaints existing slides and overwrites "
+            "per-call hex that may have been set at create_slide time. "
+            "Re-invoke with confirm_destructive=True to proceed."
+        )
+
+    # --- Early-validate `brief` path before any network call -------------
+    if brief is not None:
+        early_candidate: dict[str, Any] = dict(brief)
+        early_candidate.setdefault("version", theme_brief_mod.SCHEMA_VERSION)
+        ok_early, errors_early = theme_brief_mod.validate_brief(early_candidate)
+        if not ok_early:
+            raise ValueError("invalid brief: " + "; ".join(errors_early))
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+
+    # --- Resolve final brief ---------------------------------------------
+    if brief is not None:
+        final_brief: dict[str, Any] = dict(brief)
+        final_brief.setdefault("version", theme_brief_mod.SCHEMA_VERSION)
+    else:
+        if meta is None:
+            raise FileNotFoundError(
+                "no theme-brief meta-slide to merge delta into. Pass `brief` "
+                "for a wholesale replacement, or call set_theme_brief first "
+                "(brownfield path: extract_theme_brief + set_theme_brief)."
+            )
+        existing = theme_brief_mod.parse_brief_body(meta["body_text"]) or {}
+        final_brief = theme_brief_mod.merge_brief(existing, delta or {})
+        ok, errors = theme_brief_mod.validate_brief(final_brief)
+        if not ok:
+            raise ValueError("invalid brief: " + "; ".join(errors))
+
+    # --- Step 1: Commit brief to meta-slide ------------------------------
+    if meta is not None and meta.get("body_box_id"):
+        # In-place body rewrite.
+        reqs = theme_brief_mod.build_update_brief_requests(
+            meta["body_box_id"], final_brief
+        )
+        slides_api.batch_update(deck_id, reqs)
+        meta_slide_id = meta["slide_id"]
+        action = "updated"
+    else:
+        # No meta (or corrupted) — delete + recreate.
+        if meta is not None:
+            slides_api.batch_update(
+                deck_id, [{"deleteObject": {"objectId": meta["slide_id"]}}]
+            )
+        deck_w_in, deck_h_in = _deck_dimensions_in(deck_id)
+        prez_after = slides_api.get_presentation(deck_id, fields="slides.objectId")
+        insertion_index = len(prez_after.get("slides", []))
+        meta_slide_id = _new_object_id(prefix=theme_brief_mod.META_SLIDE_ID_PREFIX)
+        marker_id = _new_object_id(prefix=theme_brief_mod.MARKER_BOX_ID_PREFIX)
+        body_id = _new_object_id(prefix=theme_brief_mod.BODY_BOX_ID_PREFIX)
+        create_reqs = theme_brief_mod.build_create_meta_slide_requests(
+            slide_id=meta_slide_id,
+            marker_box_id=marker_id,
+            body_box_id=body_id,
+            brief=final_brief,
+            deck_width_in=deck_w_in,
+            deck_height_in=deck_h_in,
+            insertion_index=insertion_index,
+        )
+        slides_api.batch_update(deck_id, create_reqs)
+        action = "created"
+
+    # --- Step 2: Restyle existing slides ---------------------------------
+    restyle_result = restyle_slides(
+        deck_url=deck_url,
+        slide_ids=slide_ids,
+        normalize_fonts=normalize_fonts,
+        confirm_destructive=True,
+    )
+
+    return {
+        "deck_id": deck_id,
+        "meta_slide_id": meta_slide_id,
+        "brief": final_brief,
+        "action": action,
+        "restyle": {
+            "restyled_slide_ids": restyle_result.get("restyled_slide_ids", []),
+            "skipped_slide_ids": restyle_result.get("skipped_slide_ids", []),
+            "total_rewrites": restyle_result.get("total_rewrites", 0),
+            "per_slide": restyle_result.get("per_slide", {}),
+            "applied_request_count": restyle_result.get(
+                "applied_request_count", 0
+            ),
+            "thumbnails": restyle_result.get("thumbnails", {}),
+        },
+        "warnings": list(restyle_result.get("warnings", [])),
+    }
+
+
+# Default showcase content for preview_brief_tweak when the caller doesn't
+# provide any. Chosen for brief-axis coverage: cover shows accent + title
+# font + surface; 3col_pill_cards shows category_set + shape_language +
+# body font; text_left_image_right rounds out accent-on-lighter-surface.
+_PREVIEW_DEFAULT_CONTENT: list[dict[str, Any]] = [
+    {
+        "archetype": "cover_with_hero",
+        "content": {
+            "title": "Brief preview — cover",
+            "subtitle": "Palette + title font under this candidate brief.",
+        },
+        "slide_id": "cover",
+    },
+    {
+        "archetype": "3col_pill_cards",
+        "content": {
+            "title": "Three pillars in this tone",
+            "lead": "Category set + shape language come through here.",
+            "columns": [
+                {"pill": "Clarity", "body": "What the numbers say at a glance."},
+                {"pill": "Impact", "body": "Why this matters for the reader."},
+                {"pill": "Next steps", "body": "What we do with this finding."},
+            ],
+        },
+        "slide_id": "pills",
+    },
+]
+
+
+@mcp.tool()
+def preview_brief_tweak(
+    deck_url: str,
+    candidate_brief: dict[str, Any],
+    sample_content: list[dict[str, Any]] | None = None,
+    compare_to_current: bool = True,
+    variant_prefix: str = "tweak_preview",
+) -> dict[str, Any]:
+    """Write sample slides into the deck under ``candidate_brief`` so the
+    **HUMAN** opens Google Slides, flips through, and picks. This is the
+    approval gate for live brief iteration — not a PIL swatch that only the
+    agent sees.
+
+    Anchor (Decision R/S): the brief lives in the deck's hidden meta-slide.
+    ``preview_brief_tweak`` **temporarily** swaps the meta brief to render
+    preview slides via ``generate_variants``, then **restores** the original
+    brief at the end. ``candidate_brief`` is NOT persisted by this tool —
+    call ``apply_brief_and_restyle(deck_url, brief=candidate_brief,
+    confirm_destructive=True)`` to commit after the human approves.
+
+    Default behaviour (no ``sample_content``):
+      Writes 2 showcase slides (cover_with_hero + 3col_pill_cards) per brief.
+      When ``compare_to_current=True`` AND the deck has a current brief,
+      writes those 2 slides TWICE — once under the current brief, once under
+      the candidate — so the human sees them side-by-side in the deck.
+      Slide IDs: ``{variant_prefix}{0|1}_{cover|pills}``.
+
+    Custom ``sample_content``:
+      List of ``{archetype, content, slide_id?}`` dicts, same shape
+      ``generate_variants`` accepts. Use to preview a specific archetype the
+      deck actually uses (e.g. text_left_image_right).
+
+    Brownfield:
+      If the deck has no meta-slide yet, pass ``compare_to_current=False``
+      AND understand that ``generate_variants``'s internal ``set_theme_brief``
+      call will CREATE the meta-slide with ``candidate_brief``. Recommended
+      flow instead: ``extract_theme_brief(deck_url)`` → review →
+      ``set_theme_brief(deck_url, extracted_brief)`` to establish a baseline
+      meta, THEN ``tweak_brief`` + ``preview_brief_tweak`` work naturally.
+
+    Returns::
+
+        {
+          deck_id,
+          preview_slide_ids_candidate: [...],
+          preview_slide_ids_current: [...],    # [] if no current brief
+          thumbnails: {slide_id: url},
+          candidate_brief,
+          current_brief,                       # None if brownfield
+          variants_manifest,                   # pass to lock_variant for bulk cleanup
+          meta_restored: bool,                  # True when original brief was restored
+          next_step_hint,
+          cleanup_hint,
+        }
+
+    Raises:
+      - ValueError if ``candidate_brief`` fails validation.
+
+    Cleanup after human approves:
+      - commit: ``apply_brief_and_restyle(deck_url, brief=candidate_brief,
+        confirm_destructive=True)`` — repaints existing slides.
+      - delete preview slides: loop ``delete_slide(deck_url, slide_id)`` over
+        every entry in ``preview_slide_ids_candidate +
+        preview_slide_ids_current``, OR call ``lock_variant(deck_url,
+        variant_id=<winner>, variants_manifest)`` to auto-delete the losing
+        variant plus commit the winner's brief in one go.
+    """
+    ok, errors = theme_brief_mod.validate_brief(candidate_brief)
+    if not ok:
+        raise ValueError(
+            "candidate_brief failed validation: " + "; ".join(errors)
+        )
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+    current_brief = (
+        theme_brief_mod.parse_brief_body(meta["body_text"]) if meta else None
+    )
+
+    # Resolve briefs list
+    if compare_to_current and current_brief is not None:
+        briefs: list[dict[str, Any]] = [current_brief, candidate_brief]
+    else:
+        briefs = [candidate_brief]
+
+    # Resolve content
+    content_list = sample_content if sample_content else _PREVIEW_DEFAULT_CONTENT
+
+    # Drive the render loop — this internally sets the meta brief per variant
+    manifest = generate_variants(
+        deck_url=deck_url,
+        content_list=content_list,
+        briefs=briefs,
+        variant_prefix=variant_prefix,
+    )
+
+    # Restore original meta brief so the deck ends in the same state it
+    # started. `generate_variants` leaves meta at `briefs[-1]` (candidate).
+    meta_restored = False
+    if current_brief is not None:
+        set_theme_brief(deck_url, current_brief)
+        meta_restored = True
+
+    # Collect thumbnails for every preview slide the human will review
+    thumbnails: dict[str, str] = {}
+    preview_slide_ids_candidate: list[str] = []
+    preview_slide_ids_current: list[str] = []
+    for variant in manifest.get("variants", []):
+        variant_id = variant.get("variant_id")
+        slide_ids = variant.get("slide_ids", [])
+        is_candidate_variant = variant.get("brief") == candidate_brief
+        for sid in slide_ids:
+            try:
+                thumb_url = slides_api.get_thumbnail(deck_id, sid, size="MEDIUM")
+                thumbnails[sid] = thumb_url
+            except Exception as e:  # noqa: BLE001 — non-fatal
+                thumbnails[sid] = f"(thumbnail fetch failed: {e})"
+            if is_candidate_variant:
+                preview_slide_ids_candidate.append(sid)
+            else:
+                preview_slide_ids_current.append(sid)
+        # Fallback heuristic when brief-equality check misses (dict deep-eq
+        # can fail on float stamping) — use variant index order
+        del variant_id  # noqa
+
+    # Robust fallback: if the equality heuristic populated neither bucket
+    # (should not happen, but safe), fall back to index order: last variant
+    # = candidate, earlier = current.
+    if not preview_slide_ids_candidate and manifest.get("variants"):
+        variants_list = manifest["variants"]
+        # last variant is always the candidate per our briefs list ordering
+        preview_slide_ids_candidate = list(variants_list[-1].get("slide_ids", []))
+        preview_slide_ids_current = []
+        for v in variants_list[:-1]:
+            preview_slide_ids_current.extend(v.get("slide_ids", []))
+
+    cleanup_hint = (
+        "After the human picks: call lock_variant(deck_url, "
+        f"variant_id='{variant_prefix}{len(briefs) - 1}', "
+        "variants_manifest=<this.variants_manifest>) to commit candidate "
+        "+ delete current-baseline preview slides in one call, OR call "
+        "delete_slide per id in preview_slide_ids_candidate + "
+        "preview_slide_ids_current, then apply_brief_and_restyle to persist."
+    )
+    next_step_hint = (
+        "Open the deck in Google Slides and flip through the "
+        f"{variant_prefix}0_* vs {variant_prefix}{len(briefs) - 1}_* slides. "
+        "If human approves candidate: apply_brief_and_restyle(deck_url, "
+        "brief=candidate_brief, confirm_destructive=True). If not: "
+        "delete the preview slides and tweak_brief again with a different directive."
+    )
+
+    return {
+        "deck_id": deck_id,
+        "preview_slide_ids_candidate": preview_slide_ids_candidate,
+        "preview_slide_ids_current": preview_slide_ids_current,
+        "thumbnails": thumbnails,
+        "candidate_brief": candidate_brief,
+        "current_brief": current_brief,
+        "variants_manifest": manifest,
+        "meta_restored": meta_restored,
+        "next_step_hint": next_step_hint,
+        "cleanup_hint": cleanup_hint,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Brief catalog + export/import (Scope D + E, v0.8.0)
+#
+# The catalog is a USER-OWNED personal library at
+# $XDG_CONFIG_HOME/slides-mcp/briefs/<id>.yaml. It is ORTHOGONAL to the
+# meta-slide (Decision R/S): the deck's meta is the source of truth for
+# an ACTIVE brief; the catalog is for library reuse across decks. Every
+# catalog-to-deck commit goes through set_theme_brief — the catalog itself
+# never touches decks directly.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_catalog_briefs(mood: str | None = None) -> dict[str, Any]:
+    """List briefs saved in the user's personal catalog.
+
+    Catalog path: ``$SLIDES_MCP_CATALOG_DIR`` OR ``$XDG_CONFIG_HOME/slides-mcp/briefs/``
+    OR ``~/.config/slides-mcp/briefs/`` — resolved at call time. Entries are
+    YAML files, one per brief, 100% user-owned.
+
+    ``mood``: optional case-insensitive substring filter against each
+    entry's ``mood_keywords`` list. Omit to list all entries.
+
+    Returns {briefs, count, catalog_dir, mood_filter} where ``briefs`` is
+    a list of metadata envelopes (no full brief body) — call
+    ``use_catalog_brief`` to fetch + apply a specific entry to a deck.
+    """
+    entries = catalog_mod.list_briefs(mood=mood)
+    return {
+        "briefs": entries,
+        "count": len(entries),
+        "catalog_dir": str(catalog_mod.catalog_dir()),
+        "mood_filter": mood,
+    }
+
+
+@mcp.tool()
+def save_brief_to_catalog(
+    deck_url: str,
+    name: str,
+    mood_keywords: list[str] | None = None,
+    brief_id: str | None = None,
+    brief: dict[str, Any] | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Save a brief to the user's catalog for reuse across decks.
+
+    Default source: reads the active deck's hidden meta-slide brief. Pass
+    ``brief=`` explicitly to save a brief that isn't yet committed to any
+    deck (e.g. a variant from ``propose_brief_variants`` the user liked).
+
+    ``name``: human-readable title ("Client X warm editorial").
+    ``mood_keywords``: free-form tags used by ``list_catalog_briefs(mood=)``.
+    ``brief_id``: explicit slug; auto-generated from ``name`` if omitted.
+    ``overwrite``: replace in-place when the id already exists.
+
+    Catalog entries are NOT a cache of the deck — editing the catalog file
+    does not change any deck, and editing a deck does not mutate its
+    catalog copy. Use ``use_catalog_brief`` to reapply a saved entry.
+
+    Returns the saved envelope: {id, name, mood_keywords, created_at, path,
+    brief}.
+    """
+    if brief is None:
+        deck_id = slides_api.deck_id_from_url(deck_url)
+        prez = _fetch_for_brief(deck_id)
+        meta = theme_brief_mod.find_meta_slide(prez)
+        if meta is None:
+            raise FileNotFoundError(
+                "deck has no theme-brief meta-slide to save. Pass the "
+                "`brief` param explicitly, or commit one with set_theme_brief "
+                "(brownfield path: extract_theme_brief + set_theme_brief)."
+            )
+        brief_from_deck = theme_brief_mod.parse_brief_body(meta["body_text"])
+        if brief_from_deck is None:
+            raise FileNotFoundError(
+                "meta-slide found but body did not parse as a brief"
+            )
+        brief = brief_from_deck
+
+    ok, errors = theme_brief_mod.validate_brief(brief)
+    if not ok:
+        raise ValueError(
+            "brief invalid — refusing to save: " + "; ".join(errors)
+        )
+
+    saved = catalog_mod.save_brief(
+        brief=brief,
+        name=name,
+        brief_id=brief_id,
+        mood_keywords=mood_keywords,
+        overwrite=overwrite,
+    )
+    return {
+        "id": saved["id"],
+        "name": saved["name"],
+        "mood_keywords": saved["mood_keywords"],
+        "created_at": saved["created_at"],
+        "path": saved["path"],
+        "brief": saved["brief"],
+        "next_step_hint": (
+            f"use_catalog_brief(deck_url=<other_deck>, brief_id={saved['id']!r}) "
+            "to apply this saved brief to another deck."
+        ),
+    }
+
+
+@mcp.tool()
+def use_catalog_brief(
+    deck_url: str,
+    brief_id: str,
+) -> dict[str, Any]:
+    """Copy a brief from the catalog into a deck's meta-slide.
+
+    Wraps ``catalog.load_brief`` → ``set_theme_brief``. Does NOT repaint
+    existing slides — pair with ``apply_brief_and_restyle(deck_url,
+    brief=result['brief'], confirm_destructive=True)`` if you also want a
+    full repaint.
+
+    Raises FileNotFoundError if ``brief_id`` isn't in the catalog. Call
+    ``list_catalog_briefs()`` first to see available ids.
+
+    Returns {deck_id, brief_id, name, brief, action, slide_id,
+    next_step_hint}.
+    """
+    entry = catalog_mod.load_brief(brief_id)
+    brief = entry["brief"]
+
+    ok, errors = theme_brief_mod.validate_brief(brief)
+    if not ok:
+        raise ValueError(
+            f"catalog entry {brief_id!r} contains an invalid brief: "
+            + "; ".join(errors)
+        )
+
+    result = set_theme_brief(deck_url, brief)
+    return {
+        "deck_id": result["deck_id"],
+        "brief_id": brief_id,
+        "name": entry.get("name"),
+        "brief": brief,
+        "action": result["action"],
+        "slide_id": result["slide_id"],
+        "next_step_hint": (
+            "brief committed to meta-slide but existing slides are NOT "
+            "repainted. Call apply_brief_and_restyle(deck_url, "
+            f"brief={brief!r}, confirm_destructive=True) to repaint."
+            if brief else
+            "brief committed to meta-slide"
+        ),
+    }
+
+
+@mcp.tool()
+def export_brief(deck_url: str) -> dict[str, Any]:
+    """Export the deck's active brief as a portable YAML string + dict.
+
+    Useful for sharing briefs out-of-band (pasting into a review doc,
+    emailing a client, committing a client-specific brief to a VCS repo
+    separate from slides-mcp). Round-trips cleanly with ``import_brief``.
+
+    Returns {deck_id, brief, brief_yaml, source_slide_id}.
+
+    Raises FileNotFoundError if the deck has no meta-slide. Brownfield flow:
+    extract_theme_brief + set_theme_brief first.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+    if meta is None:
+        raise FileNotFoundError(
+            "deck has no theme-brief meta-slide; nothing to export. "
+            "Brownfield path: extract_theme_brief + set_theme_brief first."
+        )
+    brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+    if brief is None:
+        raise FileNotFoundError(
+            "meta-slide found but body did not parse as a brief"
+        )
+    brief_yaml = yaml.safe_dump(brief, sort_keys=False, allow_unicode=True)
+    return {
+        "deck_id": deck_id,
+        "brief": brief,
+        "brief_yaml": brief_yaml,
+        "source_slide_id": meta["slide_id"],
+    }
+
+
+@mcp.tool()
+def import_brief(
+    deck_url: str,
+    yaml_source: str,
+    is_path: bool = False,
+) -> dict[str, Any]:
+    """Import a brief from a YAML string (or file path) and commit it to
+    the deck's meta-slide via ``set_theme_brief``.
+
+    ``yaml_source``: the YAML content itself (when ``is_path=False``) OR a
+      filesystem path to read from (when ``is_path=True``).
+
+    Accepts either a bare brief dict OR an envelope shaped like the catalog
+    (``{brief: {...}, ...}``) — the ``brief`` key is extracted transparently.
+
+    Does NOT repaint existing slides. Pair with ``apply_brief_and_restyle``
+    if you want to repaint.
+
+    Returns {deck_id, brief, action, slide_id, source, next_step_hint}.
+
+    Raises:
+      - FileNotFoundError if ``is_path=True`` and the path is missing.
+      - ValueError if the YAML fails to parse or the final brief fails
+        ``validate_brief``.
+    """
+    if is_path:
+        path = Path(yaml_source).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"brief YAML file not found: {path}")
+        yaml_text = path.read_text()
+    else:
+        yaml_text = yaml_source
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"yaml_source is not valid YAML: {e}") from e
+
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "yaml_source must parse to a dict (a brief or an envelope "
+            f"with a `brief` key); got {type(parsed).__name__}"
+        )
+    # Envelope (catalog shape) or bare brief?
+    if "brief" in parsed and isinstance(parsed["brief"], dict):
+        brief = parsed["brief"]
+    else:
+        brief = parsed
+
+    ok, errors = theme_brief_mod.validate_brief(brief)
+    if not ok:
+        raise ValueError(
+            "imported brief failed validation: " + "; ".join(errors)
+        )
+
+    result = set_theme_brief(deck_url, brief)
+    return {
+        "deck_id": result["deck_id"],
+        "brief": brief,
+        "action": result["action"],
+        "slide_id": result["slide_id"],
+        "source": "path" if is_path else "string",
+        "next_step_hint": (
+            "brief committed to meta-slide but existing slides are NOT "
+            "repainted. Call apply_brief_and_restyle(deck_url, "
+            "brief=..., confirm_destructive=True) to repaint."
+        ),
+    }
 
 
 @mcp.tool()

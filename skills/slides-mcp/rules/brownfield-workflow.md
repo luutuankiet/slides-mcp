@@ -1,8 +1,29 @@
-# Brownfield workflow (v0.7.0)
+# Brownfield workflow (v0.7.0, v0.9.0)
 
 Use this loop when the user starts from an **existing deck** rather than a blank
 canvas — consulting on a deck they already have, repainting to a new brand, or
 unifying the voice across slides someone else built.
+
+## v0.9.0 pre-requisite — scaffold the brief first
+
+Before entering the repaint loop below, the deck must have a committed theme
+brief. For a brand-new onboarding:
+
+```
+scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True)
+```
+
+One-shot. Detects existing / absent / corrupted meta, extracts a proposal
+from the palette + shape topology, auto-commits when confidence is high.
+Replaces the legacy `get_theme_brief → extract_theme_brief → set_theme_brief`
+3-call dance for brownfield (the dominant entry mode). Low-confidence
+proposals come back for agent/user review before committing.
+
+Commits also populate speaker notes on the meta slide with rebuild
+instructions — durability ensures the next human who finds the hidden slide
+doesn't delete it. See `rules/theme-coherence.md` § Deletion safety.
+
+Once the brief is committed, proceed with the loop below.
 
 ## v0.7.0 upgrades at a glance
 

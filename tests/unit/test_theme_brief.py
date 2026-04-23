@@ -566,3 +566,58 @@ def test_neutral_hex_helper():
     assert tb._neutral_hex("#808080") is True
     assert tb._neutral_hex("#E8612E") is False
     assert tb._neutral_hex("#0F1A4A") is False  # dark navy, chromatic blue
+
+
+# ---------------------------------------------------------------------------
+# Durability enhancements (v0.9.0): preamble rebuild text + speaker notes
+# ---------------------------------------------------------------------------
+
+
+def test_warning_preamble_references_rebuild_command():
+    """WARNING_PREAMBLE now instructs readers how to rebuild the meta slide."""
+    assert "scaffold_meta_brief" in tb.WARNING_PREAMBLE
+    assert "auto_commit_if_high_confidence" in tb.WARNING_PREAMBLE
+
+
+def test_warning_preamble_still_starts_with_warning_emoji():
+    """Back-compat: existing callers assert the emoji prefix."""
+    assert tb.WARNING_PREAMBLE.startswith("⚠ slides-mcp metadata")
+
+
+def test_speaker_notes_text_constant_exists():
+    assert hasattr(tb, "SPEAKER_NOTES_TEXT")
+    assert isinstance(tb.SPEAKER_NOTES_TEXT, str)
+    assert len(tb.SPEAKER_NOTES_TEXT) > 200  # non-trivially helpful
+
+
+def test_speaker_notes_text_carries_key_phrases():
+    """Speaker notes must give humans enough context to NOT delete the meta slide."""
+    text = tb.SPEAKER_NOTES_TEXT
+    assert "DO NOT DELETE" in text
+    assert "theme brief" in text.lower()
+    assert "scaffold_meta_brief" in text
+    assert "extract_theme_brief" in text
+    assert "set_theme_brief" in text
+    assert "update_theme_brief" in text
+
+
+def test_build_notes_populate_requests_shape():
+    reqs = tb.build_notes_populate_requests("notes_body_1")
+    assert len(reqs) == 1
+    kinds = [next(iter(r.keys())) for r in reqs]
+    assert kinds == ["insertText"]
+    insert = reqs[0]["insertText"]
+    assert insert["objectId"] == "notes_body_1"
+    assert insert["insertionIndex"] == 0
+    assert insert["text"] == tb.SPEAKER_NOTES_TEXT
+
+
+def test_serialize_still_parses_after_preamble_expansion():
+    """Roundtrip invariant must survive the preamble growing rebuild text."""
+    brief = dict(tb.DEFAULT_BRIEF)
+    body = tb.serialize_brief(brief)
+    parsed = tb.parse_brief_body(body)
+    assert parsed is not None
+    # Schema version is stamped on serialize; compare ignoring any version drift.
+    for k in ("palette", "shape_language", "numbering_style", "tone"):
+        assert parsed.get(k) == brief.get(k)
