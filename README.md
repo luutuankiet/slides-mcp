@@ -2,7 +2,16 @@
 
 An MCP server that lets Claude (and other agents) turn prompts into finished Google Slides decks — and edit existing ones — through a compact YAML DSL. Built for multi-hundred-turn editing sessions without token bloat, with first-class brand-theme enforcement, presenter-note support, and a true bidirectional agent loop.
 
-The agent can **see** the rendered slide (native `ImageContent`), **edit** text and shape positions at coordinate level, **compose** new slides from archetype templates, **choose per-slide visual identity** via content-driven color palettes, and **commit a deck-level theme brief** (hidden meta-slide carrying palette + tone + shape language) that every subsequent `create_slide` call resolves from — one commitment, coherent deck — all in the same session.
+The agent can **see** rendered slides (native `ImageContent`), **edit** text + shape positions at coordinate level, **compose** new slides from archetype templates, **choose per-slide visual identity** via content-driven palettes, **commit a deck-level theme brief** (palette + fonts + shape language carried in a hidden meta-slide) that every subsequent `create_slide` resolves from, **preview** candidate themes and archetypes as PIL-composed PNGs *before writing any slide*, and **audit coherence** ("did this deck stick to its brief?") as a single closed-loop 0..1 score before shipping.
+
+**Use cases this unlocks:**
+
+- **Turn a README into a pitch deck** — one prompt in, ~10 slides out, with varied archetypes + content-driven palettes + presenter notes.
+- **Repaint a brownfield deck** to new brand colors + fonts in one call (`restyle_slides(normalize_fonts=True)`).
+- **Compare 3 theme variants before committing** — one PNG grid (`render_brief_swatch_grid`) instead of writing 15 slides.
+- **Fresh-agent onboarding to an existing deck** — `orient_to_deck` returns brief + coherence + archetype histogram + dominant font + outline in one call.
+- **Pre-ship coherence gate** — `audit_brief_coherence` gives one number plus per-slide fix hints.
+- **Close the bidi loop** — the agent sees each rendered slide as native `ImageContent` and moves shapes via `elements[].at` DSL edits.
 
 ## Quick mental model
 
@@ -56,6 +65,8 @@ Palette keys are **roles**, not hex codes. DSL references `palette.brand_accent`
 
 Your real brand theme stays outside the repo. The bundled `example.yaml` is a generic placeholder.
 
+**Font overlay (v0.7.0):** the theme brief can additionally carry `font_family.{heading, body}` which overlays the theme YAML font family at build time — one commitment swaps the whole deck onto a curated Google Fonts pairing without touching the theme file. Browse curated pairings via `list_font_pairings(mood?)`.
+
 ### 2. `archetype.yaml` — what KIND of slide
 
 ```yaml
@@ -102,6 +113,67 @@ _object_ids: {title: t_title, paragraphs: [p_1, p_2]}
 Edit this YAML, pass it back as `new_dsl_yaml` to `patch_slide`, and the server computes the minimum `batchUpdate` request list. Text edits, element moves, notes updates — one call.
 
 **Clean mode** is the default, ~100-150 tok/slide. **Faithful mode** preserves raw per-element geometry for slides the classifier can't match to a known archetype.
+
+## v0.7.0 — "Approve before you commit" (preview primitives)
+
+v0.7.0 adds PIL-composed preview primitives that let a human eyeball theme / archetype candidates **before any slide is written**. Zero Slides API calls, zero deck writes; pure in-memory PNG composition returned as native MCP `ImageContent`.
+
+| Tool | Purpose |
+|------|---------|
+| `render_brief_swatch(brief)` | One tone card: palette + pill row + numbered chips + shape chevron + font sample. |
+| `render_brief_swatch_grid(briefs)` | N tone cards side-by-side in one PNG — the fast-switch approval primitive. |
+| `preview_archetype(archetype, content, brief)` | PIL sketch of what a specific archetype+content+brief would render like. Compare layouts pre-commit. |
+| `render_deck_contact_sheet(deck_url, slide_ids?, variant_id?, max_slides=36)` | Thumbnail grid PNG of every (or filtered) slide. Cuts N thumbnail round-trips to 1. |
+| `list_font_pairings(mood?)` | Browse 12 curated Google Fonts pairings tagged by mood (editorial, tech, enterprise, bold, warm, elegant, …). |
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant MCP
+    Agent->>MCP: propose_brief_variants(intent, n=3, exclude_current_brief=True, deck_url=...)
+    MCP-->>Agent: 3 candidate briefs (with font_family axis)
+    Agent->>MCP: render_brief_swatch_grid(briefs)
+    MCP-->>Agent: ONE PNG, all 3 tones
+    Note over Agent: human picks variant[1]
+    Agent->>MCP: set_theme_brief(deck_url, briefs[1])
+    Agent->>MCP: create_slide(...) × N
+    MCP-->>Agent: each response carries brief_fields_used
+    Agent->>MCP: audit_brief_coherence(deck_url, slide_ids=[new slide ids])
+    MCP-->>Agent: coherence_score + drift + fix hints
+```
+
+## v0.7.0 — theme discipline (coherence + onboarding)
+
+Three tools close the "did the deck stick to its brief?" loop:
+
+| Tool | Purpose |
+|------|---------|
+| `audit_brief_coherence(deck_url, slide_ids?)` | Single composite 0..1 score (palette 50% + font 30% + shape 20%), slide-level drift report + fix hints. `slide_ids` scopes to a batch. |
+| `orient_to_deck(deck_url, outline_limit=30)` | Composite fresh-agent onboarding: brief + coherence + archetype histogram + dominant font + (paginated) outline. Token-efficient on any deck size. |
+| `create_slide.brief_fields_used` | New response field: list of brief paths each slide resolved from. Agent can assert observability in autonomous loops. |
+
+See `skills/slides-mcp/rules/theme-discipline.md` for the prescriptive greenfield→brownfield→ship workflow.
+
+## v0.6.0 — brownfield restyle + vanilla icons
+
+| Tool | Purpose |
+|------|---------|
+| `audit_typography(deck_url)` | Brownfield typography audit — dominant font + outliers, size clusters, orphan bolds, color drift vs brief. |
+| `restyle_slides(deck_url, slide_ids, normalize_fonts?, confirm_destructive)` | Retroactive brief apply — repaint fills + text colors + (v0.7.0) font families per brief. Destructive, gated by `confirm_destructive=True`. |
+| `list_icons(filter_keyword?)` | Browse 30+ vanilla icons composed from Slides API native shapes (ROUND_RECTANGLE, RIGHT_ARROW, STAR_5, HEART, composed rectangles). |
+| `create_icon(deck_url, slide_id, at, name, fill_hex?)` | Draw a vanilla icon. Auto-colors to brief.palette.accent if `fill_hex` omitted. No external SVG/raster deps. |
+
+3col_pill_cards archetype accepts optional `icon_names: [str × 3]` to drop an icon above each pill.
+
+## v0.5.0 — typographic depth + variant selection
+
+| Tool | Purpose |
+|------|---------|
+| `update_text_style(slide_id, object_id, range, style)` | Character-range styling — bold/italic/color/size/fontFamily on `all` / `{paragraph}` / `{chars: [s,e]}` / `{match: "text"}`. |
+| `update_paragraph_style(...)` | Paragraph-level: alignment, indent, lineSpacing, spaceAbove/Below. |
+| `propose_brief_variants(intent, n, exclude_current_brief?)` | Propose N distinct-mood briefs (each carries font_family). |
+| `generate_variants(deck, content_list, briefs, variant_prefix)` | Render same content under N briefs side-by-side. |
+| `lock_variant(winner_id, manifest)` | Commit winner's brief + delete losers. |
 
 ## Plus one more: the theme brief (v0.3.0)
 
@@ -178,7 +250,7 @@ sequenceDiagram
     MCP-->>Agent: {applied_request_count, new_dsl_yaml, thumbnail}
 ```
 
-## What the MVP does
+## Full tool surface (40 tools, v0.7.0)
 
 ### Write / compose
 
@@ -221,6 +293,35 @@ sequenceDiagram
 | `update_theme_brief(deck_url, changes)` | Forward-only deep-merge patch — future slides pick up the change, existing slides untouched. |
 | `extract_theme_brief(deck_url)` | Brownfield: propose a brief from an existing deck's dominant palette + shape topology. Does NOT commit — agent reviews with user, tweaks, commits via `set_theme_brief`. |
 
+### Brownfield + coherence (v0.6.0 / v0.7.0)
+
+| Tool | What |
+|------|------|
+| `audit_typography(deck_url, theme?, sub_theme?)` | Font outliers, size clusters, orphan bolds, color drift vs brief. |
+| `restyle_slides(deck_url, slide_ids, brief_overrides?, normalize_fonts?, confirm_destructive=True)` | Retroactive brief apply — fills + text colors + (v0.7.0) font families. |
+| `audit_brief_coherence(deck_url, slide_ids?)` | Single 0..1 closed-loop score + drift + fix hints. |
+| `orient_to_deck(deck_url, outline_limit=30)` | Composite fresh-agent onboarding. |
+| `list_icons(filter_keyword?)` / `create_icon(...)` | Vanilla icons from Slides API native shapes. |
+
+### Preview primitives (v0.7.0)
+
+| Tool | What |
+|------|------|
+| `render_brief_swatch(brief)` | One tone-card PNG. |
+| `render_brief_swatch_grid(briefs)` | N tone-cards in one PNG. |
+| `preview_archetype(archetype, content, brief?)` | PIL dry-run of a candidate slide. |
+| `render_deck_contact_sheet(deck_url, slide_ids?, variant_id?, max_slides=36)` | Whole-deck thumbnail grid. |
+| `list_font_pairings(mood?)` | 12 curated Google Fonts pairings. |
+
+### Typographic depth + variant selection (v0.5.0)
+
+| Tool | What |
+|------|------|
+| `update_text_style(...)` / `update_paragraph_style(...)` | Range-based character / paragraph styling. |
+| `propose_brief_variants(intent, n, exclude_current_brief?, deck_url?)` | N distinct-mood briefs (fonts included). |
+| `generate_variants(deck, content_list, briefs, variant_prefix)` | Render content N ways. |
+| `lock_variant(winner_id, manifest)` | Commit winner + delete losers. |
+
 ### Diagnostic
 
 | Tool | What |
@@ -229,12 +330,14 @@ sequenceDiagram
 
 ## What it does NOT (yet)
 
-- **Resize / rotate** elements (warn-only in diff; translation-only writes in v0.3.0)
-- **Archetype swap** ("relayout to 3 columns" — requires delete-all + recreate; reachable today via `exec_batch_update`)
-- **Retroactive repaint from brief updates** (`update_theme_brief` is forward-only; named Phase 2.5 follow-up `restyle_slides` not yet shipped)
-- **AI / stock image pipeline** (image URL passthrough works; placeholder-with-prompt works; no Imagen/Pexels/etc. integration yet)
-- **Phosphor icon library** (no curated icon set yet — use `create_shape` + `exec_batch_update` manually)
+- **Resize / rotate** elements (warn-only in diff; translation-only writes since v0.2.1)
+- **Archetype swap** ("relayout to 3 columns" — requires delete-all + recreate; reachable via `exec_batch_update`)
+- **AI / stock image pipeline** (still vetoed by project vision; placeholder-with-prompt is the first-class deliverable)
+- **Bundled Google Fonts TTFs** (`render_brief_swatch` falls back to DejaVu Sans/Serif when the brief-specified font isn't on the render host; font family name is still annotated on the swatch caption)
+- **Clean projectors for `4col_numbered_flow` + `4col_card_with_image`** (restyle falls back to faithful walk)
+- **`text_left_image_right` icon_name overlay** (only `3col_pill_cards` integrates `icon_names` for v0.6.0+)
 - **`.pptx` target** (Google Slides only)
+- **Master-slide / shared-layout mutations** (not scoped yet)
 
 ## Installation
 
@@ -326,7 +429,20 @@ flowchart TB
 
 ## Status
 
-**v0.3.0** — 23 MCP tools, 5 content builders, in-deck theme coherence, brownfield extraction. 181 unit tests pass, ruff clean, live-verified on real decks (bidi loop + cross-archetype brief coherence). Pre-v1, actively iterated. No committed production users. Use at your own risk, expect rough edges. See `releases/` for per-version narratives.
+**v0.7.0** — 40 MCP tools, 5 content builders + archetype preview dry-run, font axis in the brief, closed-loop coherence audit, composite fresh-agent onboarding, PIL-backed approve-before-commit primitives, brownfield font+palette repaint parity. **485 unit tests pass, ruff clean.** Live-verified on real decks (bidi loop + cross-archetype brief coherence + whole-deck contact-sheet gate + Round-6 autonomous intern PASSED). Pre-v1, actively iterated. Use at your own risk, expect rough edges. See `releases/` for per-version narratives.
+
+### Version history (condensed)
+
+| Version | Headline |
+|---------|----------|
+| **v0.7.0** | Approve before you commit: PIL swatch + contact sheet + archetype preview + font axis + closed-loop coherence + orient_to_deck. |
+| v0.6.0 | Brownfield restyle (audit_typography + restyle_slides) + vanilla icons. |
+| v0.5.0 | Typographic depth (update_text_style + update_paragraph_style) + variant selection (propose→generate→lock). |
+| v0.4.1 | DX patch: skill package install refresh + bridge-slide anti-pattern. |
+| v0.3.0 | Cross-slide theme coherence via in-deck meta-slide brief + brownfield extraction. |
+| v0.2.1 | create_slide runtime deck-dim scaling + content-driven palette. |
+| v0.2.0 | uvx install CLI + Claude Code skill package. |
+| v0.1.x | Bidi loop (render_thumbnail ImageContent + translation writes) + compact YAML DSL. |
 
 ## Contributing
 
