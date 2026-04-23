@@ -25,6 +25,7 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 |------|-----|-------------------|------------------|
 | Text edit a slot | `patch_slide` with DSL change | hand-rolled `replaceAllText` | Uses `_object_ids` to avoid duplicate-hit |
 | Move an existing shape | `patch_slide` with `elements[].at` diff | `updatePageElementTransform` | Emits RELATIVE mode — preserves scale/rotation |
+| **Create a new slide from intent** | **`create_slide(archetype, content)`** | hand-composed `createSlide + createShape × N + insertText × N + updateTextStyle × N` | One semantic call; archetype + theme resolved internally; returns `thumbnail_url` + `slide_id` |
 | Add a new shape | `create_shape` | `createShape + updateShapeProperties + insertText` | One tool, theme-aware fills |
 | Duplicate an existing shape | `duplicate_slot` | `duplicateObject + updatePageElementTransform` | Handles objectIds map + optional translation |
 | Clone a deck (template) | `clone_deck` (with optional `replacements` map) | Drive copy + manual replaceAllText per pair | Batched cmd+F replacement in one call |
@@ -44,6 +45,7 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `get_slide` | One slide as compact YAML; `mode=clean/faithful`, opt-in `include_elements` |
 | `search_deck` | Text substring search across slides |
 | `patch_slide` | Apply DSL patch — text edits + translation writes in one call |
+| `create_slide` | Create a new slide from archetype + semantic content; returns `thumbnail_url` + `slide_id`. Follow up with `render_thumbnail` for visual verification. |
 | `create_shape` | Insert a new shape at `[l,t,w,h]` with optional text / fill |
 | `duplicate_slot` | Duplicate an existing pageElement, optionally translate by delta |
 | `clone_deck` | Drive copy a deck, optionally with cmd+F-style text replacements |
@@ -62,4 +64,5 @@ Read these before starting. Each rule doc is scoped to one axis of the workflow:
 - [rules/write-deck.md](rules/write-deck.md) — `patch_slide` semantics; text edits, translation, `_object_ids`, `clone_deck` replacements
 - [rules/theme-hygiene.md](rules/theme-hygiene.md) — `audit_deck_colors` + `promote_to_theme`; the living-theme workflow
 - [rules/bidi-edit.md](rules/bidi-edit.md) — The see-and-move loop: `render_thumbnail` + `include_elements` + RELATIVE transforms
+- [rules/generate-from-intent.md](rules/generate-from-intent.md) — **Prompt → slides workflow:** `create_slide` primitive, archetype selection heuristic, plan→create→verify→iterate loop
 - [rules/escape-hatch.md](rules/escape-hatch.md) — `exec_batch_update` safely: `dry_run`, destructive denylist, audit log

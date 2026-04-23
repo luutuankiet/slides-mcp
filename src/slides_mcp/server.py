@@ -37,6 +37,7 @@ from . import archetypes as archetype_reg
 from . import audit as audit_mod
 from . import auth, slides_api
 from . import classify as classify_mod
+from . import create as create_mod
 from . import normalize as normalize_mod
 from . import projection as projection_mod
 from . import theme as theme_mod
@@ -512,6 +513,75 @@ def create_shape(
         "slide_id": slide_id,
         "object_id": new_id,
         "applied_request_count": len(requests),
+    }
+
+
+@mcp.tool()
+def create_slide(
+    deck_url: str,
+    archetype: str,
+    content: dict[str, Any],
+    insertion_index: int = -1,
+    theme: str = "example",
+    sub_theme: str = "primary",
+    slide_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a new slide from an archetype + semantic content.
+
+    archetype: registered name (e.g. "3col_pill_cards", "text_heavy_body",
+      "cover_with_hero"). `list_archetypes` for the full registry;
+      `supported_archetypes` (the ones with a content builder) is a subset.
+    content: dict keyed by slot name. Shapes per archetype:
+      - text_heavy_body: {title: str, paragraphs: [str, ...]}
+      - cover_with_hero: {title: str, subtitle?: str}
+      - 3col_pill_cards: {title: str, lead?: str,
+                          columns: [{pill, body}, ×3]}
+    insertion_index: 0-indexed slide position. -1 (default) = append at end.
+    slide_id: optional suggested objectId for the new slide. Auto-generated
+      if omitted.
+
+    Returns {slide_id, thumbnail_url, archetype, insertion_index,
+    applied_request_count, warnings, supported_archetypes}. The caller
+    follows up with `render_thumbnail(slide_id)` to consume the rendered PNG
+    as native MCP `ImageContent` — this closes the VISION OUTPUT loop
+    without coupling the write tool to content-block return serialization.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    sub = _sub_theme(theme, sub_theme)
+
+    resolved_index = insertion_index
+    if resolved_index < 0:
+        prez = slides_api.get_presentation(deck_id)
+        resolved_index = len(prez.get("slides", []))
+
+    new_slide_id = slide_id or _new_object_id(prefix="sl_")
+
+    create_req: dict[str, Any] = {
+        "createSlide": {
+            "objectId": new_slide_id,
+            "insertionIndex": resolved_index,
+            "slideLayoutReference": {"predefinedLayout": "BLANK"},
+        }
+    }
+    content_reqs, warnings = create_mod.build_slide_requests(
+        new_slide_id, archetype, dict(content), sub
+    )
+
+    all_reqs = [create_req] + content_reqs
+    slides_api.batch_update(deck_id, all_reqs)
+
+    thumbnail_url = slides_api.get_thumbnail(deck_id, new_slide_id, size="MEDIUM")
+
+    return {
+        "deck_id": deck_id,
+        "slide_id": new_slide_id,
+        "archetype": archetype,
+        "insertion_index": resolved_index,
+        "applied_request_count": len(all_reqs),
+        "thumbnail_url": thumbnail_url,
+        "warnings": warnings,
+        "supported_archetypes": create_mod.supported_archetypes(),
+        "next_step_hint": f"call render_thumbnail(slide_id={new_slide_id!r}) for native ImageContent to visually verify",
     }
 
 
