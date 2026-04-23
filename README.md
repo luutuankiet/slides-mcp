@@ -2,7 +2,7 @@
 
 An MCP server that lets Claude (and other agents) turn prompts into finished Google Slides decks — and edit existing ones — through a compact YAML DSL. Built for multi-hundred-turn editing sessions without token bloat, with first-class brand-theme enforcement, presenter-note support, and a true bidirectional agent loop.
 
-The agent can **see** the rendered slide (native `ImageContent`), **edit** text and shape positions at coordinate level, **compose** new slides from archetype templates, and **choose per-slide visual identity** via content-driven color palettes — all in the same session.
+The agent can **see** the rendered slide (native `ImageContent`), **edit** text and shape positions at coordinate level, **compose** new slides from archetype templates, **choose per-slide visual identity** via content-driven color palettes, and **commit a deck-level theme brief** (hidden meta-slide carrying palette + tone + shape language) that every subsequent `create_slide` call resolves from — one commitment, coherent deck — all in the same session.
 
 ## Quick mental model
 
@@ -79,7 +79,7 @@ geometry_defaults:
 
 Archetypes describe layouts in **inches against a 16×9 reference deck**. The server **auto-scales at runtime** to your actual deck size (Google default is 10×5.625, legacy widescreen is 13.33×7.5 — all 16:9 aspect). Authors of new archetypes do not need to worry about deck-size variants.
 
-Nine archetypes ship: `text_heavy_body`, `cover_with_hero`, `3col_pill_cards`, `4col_numbered_flow`, `4col_card_with_image`, `text_left_image_right`, `table_slide`, `logo_strip`, `generic_layout`. Three have content builders wired to `create_slide` in the MVP (see `supported_archetypes` in every `create_slide` response); the rest leave the slide blank and emit a warning for agent fallback to `create_shape` / `exec_batch_update`.
+Nine archetypes ship: `text_heavy_body`, `cover_with_hero`, `3col_pill_cards`, `4col_numbered_flow`, `4col_card_with_image`, `text_left_image_right`, `table_slide`, `logo_strip`, `generic_layout`. **Five have content builders** wired to `create_slide` in v0.3.0 (`text_heavy_body`, `cover_with_hero`, `3col_pill_cards`, `text_left_image_right`, `4col_numbered_flow` — see `supported_archetypes` in every `create_slide` response); the rest leave the slide blank and emit a warning for agent fallback to `create_shape` / `exec_batch_update`.
 
 ### 3. The DSL — how the agent reads and edits one slide
 
@@ -102,6 +102,32 @@ _object_ids: {title: t_title, paragraphs: [p_1, p_2]}
 Edit this YAML, pass it back as `new_dsl_yaml` to `patch_slide`, and the server computes the minimum `batchUpdate` request list. Text edits, element moves, notes updates — one call.
 
 **Clean mode** is the default, ~100-150 tok/slide. **Faithful mode** preserves raw per-element geometry for slides the classifier can't match to a known archetype.
+
+## Plus one more: the theme brief (v0.3.0)
+
+The theme + archetype + DSL trio covers *per-slide* identity. The theme brief covers *deck-level* coherence.
+
+A brief is persisted as a **hidden meta-slide inside the deck** (`isSkipped=True`, title `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`, body carries the YAML). The agent commits it once per deck from the user's intent; every subsequent `create_slide` call resolves unset visual fields from the brief.
+
+```yaml
+version: 1
+palette:
+  surface: "#0F1A4A"          # header bars, backgrounds
+  accent:  "#E8612E"          # titles, dividers, highlights
+  text:    "#000000"          # body text
+  category_set:               # 3-5 hex for N-slot archetypes (pill cards, columns)
+    - "#E8612E"
+    - "#0F1A4A"
+    - "#5A6B9A"
+shape_language: "sharp"       # sharp | rounded | mixed
+numbering_style: "bold"       # bold | outlined | dot | hidden
+tone: "clean editorial"       # free-text — informs image prompts + copy register
+image_prompt_style: "documentary photography, warm light"  # free-text
+```
+
+**Resolution order in every `create_slide`:** `per_slide_content > brief.palette.* > theme YAML > safety default`. Per-slide overrides still win (Decision O preserved); the brief is a *default*, not a gatekeeper.
+
+Four tools — `get_theme_brief`, `set_theme_brief`, `update_theme_brief` (forward-only patch), and `extract_theme_brief` (brownfield audit: propose a brief from an existing deck's dominant palette + shape topology before committing). See `skills/slides-mcp/rules/theme-coherence.md` for the greenfield / brownfield / amendment workflows.
 
 ## Core flow — creating a slide from intent
 
@@ -158,10 +184,12 @@ sequenceDiagram
 
 | Tool | What |
 |------|------|
-| `create_slide(deck_url, archetype, content, ...)` | Compose a new slide from archetype + content. Pass `pill_palette` or per-column `pill_hex` to drive visual identity per-slide, no server-side theme edit needed. |
+| `create_slide(deck_url, archetype, content, theme_brief?, ...)` | Compose a new slide from archetype + content. Pass `pill_palette` or per-column `pill_hex` for per-slide overrides. `theme_brief=True` (default) auto-reads the deck's meta-slide brief for unset fields. Response includes `brief_applied: bool`. |
+| `create_image(deck_url, slide_id, at, url?, prompt?, caption?)` | Insert a raster (via `url`) OR a RECTANGLE placeholder with `[IMAGE: prompt]` text (via `prompt`) — the placeholder is a first-class deliverable, fill in later. |
 | `patch_slide(deck_url, slide_id, new_dsl_yaml, ...)` | Apply a DSL diff — text edits + element translations, one call. |
 | `create_shape(deck_url, slide_id, at, shape_type, ...)` | Insert a single shape surgically (when `create_slide` is too coarse). |
 | `duplicate_slot(deck_url, slide_id, source_id, translate_in)` | Duplicate-and-offset an existing element. |
+| `delete_slide(deck_url, slide_id)` | Intent-explicit single-slide deletion — collapses the 3-call escape-hatch pattern. |
 | `exec_batch_update(deck_url, requests, confirm_destructive?)` | Raw `batchUpdate` escape hatch. `confirm_destructive=True` required for any `deleteObject` / `deleteSlide` / `replaceAllText`. |
 | `clone_deck(src_url, new_title, replacements?)` | Copy a deck via Drive with optional find/replace map. |
 
@@ -184,6 +212,15 @@ sequenceDiagram
 | `audit_deck_colors(deck_url, theme?, sub_theme?)` | Walk every shape; report colors and fonts not in the active theme, with nearest-role suggestions. |
 | `promote_to_theme(theme, sub_theme, role_name, kind, value)` | Write a drift value into the user theme file under a named role. |
 
+### Theme coherence (v0.3.0) — in-deck brief
+
+| Tool | What |
+|------|------|
+| `get_theme_brief(deck_url)` | Read the deck's active brief from its hidden meta-slide. Returns `{brief, slide_id, status}` or `status: "absent"`. |
+| `set_theme_brief(deck_url, brief)` | Create or replace the brief. Appends a hidden `isSkipped` meta-slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. |
+| `update_theme_brief(deck_url, changes)` | Forward-only deep-merge patch — future slides pick up the change, existing slides untouched. |
+| `extract_theme_brief(deck_url)` | Brownfield: propose a brief from an existing deck's dominant palette + shape topology. Does NOT commit — agent reviews with user, tweaks, commits via `set_theme_brief`. |
+
 ### Diagnostic
 
 | Tool | What |
@@ -192,10 +229,11 @@ sequenceDiagram
 
 ## What it does NOT (yet)
 
-- **Write presenter notes** (reads work; explicit write emission is a known small follow-up)
-- **Resize / rotate** elements (warn-only in diff; translation-only writes in MVP)
-- **Archetype swap** ("relayout to 3 columns" — Phase 2 primitive)
-- **Hero image / icon asset pipeline** (hero slot in `cover_with_hero` is acknowledged but unimplemented)
+- **Resize / rotate** elements (warn-only in diff; translation-only writes in v0.3.0)
+- **Archetype swap** ("relayout to 3 columns" — requires delete-all + recreate; reachable today via `exec_batch_update`)
+- **Retroactive repaint from brief updates** (`update_theme_brief` is forward-only; named Phase 2.5 follow-up `restyle_slides` not yet shipped)
+- **AI / stock image pipeline** (image URL passthrough works; placeholder-with-prompt works; no Imagen/Pexels/etc. integration yet)
+- **Phosphor icon library** (no curated icon set yet — use `create_shape` + `exec_batch_update` manually)
 - **`.pptx` target** (Google Slides only)
 
 ## Installation
@@ -288,7 +326,7 @@ flowchart TB
 
 ## Status
 
-Pre-v1, actively iterated. 86 unit tests pass, ruff clean, live-verified bidi loop on real decks. No committed production users. Use at your own risk, expect rough edges. See `releases/` for per-version narratives.
+**v0.3.0** — 23 MCP tools, 5 content builders, in-deck theme coherence, brownfield extraction. 181 unit tests pass, ruff clean, live-verified on real decks (bidi loop + cross-archetype brief coherence). Pre-v1, actively iterated. No committed production users. Use at your own risk, expect rough edges. See `releases/` for per-version narratives.
 
 ## Contributing
 
