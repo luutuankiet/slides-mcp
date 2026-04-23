@@ -403,6 +403,10 @@ def promote_to_theme(
 
 
 _EMU_PER_INCH = 914400
+# Archetype reference deck size in EMU — see create.py for the rationale.
+# Used as fallback when pageSize isn't returned in the FieldMask.
+_REF_WIDTH_EMU = 16 * _EMU_PER_INCH   # 14,630,400
+_REF_HEIGHT_EMU = 9 * _EMU_PER_INCH   #  8,229,600
 
 
 def _inch_to_emu(v: float) -> int:
@@ -534,8 +538,15 @@ def create_slide(
     content: dict keyed by slot name. Shapes per archetype:
       - text_heavy_body: {title: str, paragraphs: [str, ...]}
       - cover_with_hero: {title: str, subtitle?: str}
-      - 3col_pill_cards: {title: str, lead?: str,
-                          columns: [{pill, body}, ×3]}
+      - 3col_pill_cards: {title, lead?, columns: [{pill, body, pill_hex?}, ×3],
+                          pill_palette?: [hex, ...],   # cycled per column
+                          title_accent_hex?: str}      # defaults to col1 pill
+        Pill colors — priority high→low: per-column pill_hex > pill_palette[i]
+        > theme brand_accent. Pass pill_palette to tell a visual story with
+        distinct hues across columns (e.g. ["#DB4437", "#0F9D58", "#4285F4"])
+        without editing or ingesting a theme. Each column also gets a small
+        colored dot above the pill and a matching title accent bar — so the
+        agent controls the slide's visual identity per-call.
     insertion_index: 0-indexed slide position. -1 (default) = append at end.
     slide_id: optional suggested objectId for the new slide. Auto-generated
       if omitted.
@@ -549,9 +560,20 @@ def create_slide(
     deck_id = slides_api.deck_id_from_url(deck_url)
     sub = _sub_theme(theme, sub_theme)
 
+    # Fetch deck metadata once: pageSize (for geometry scaling) + slides count
+    # (for insertion_index=-1 append semantics). pageSize in EMU; convert to
+    # inches. Fallback to 16×9 (archetype reference) if mask misses.
+    prez = slides_api.get_presentation(
+        deck_id, fields="pageSize,slides.objectId"
+    )
+    page_size = prez.get("pageSize") or {}
+    deck_width_in = (page_size.get("width") or {}).get("magnitude", _REF_WIDTH_EMU)
+    deck_height_in = (page_size.get("height") or {}).get("magnitude", _REF_HEIGHT_EMU)
+    deck_width_in = deck_width_in / _EMU_PER_INCH
+    deck_height_in = deck_height_in / _EMU_PER_INCH
+
     resolved_index = insertion_index
     if resolved_index < 0:
-        prez = slides_api.get_presentation(deck_id)
         resolved_index = len(prez.get("slides", []))
 
     new_slide_id = slide_id or _new_object_id(prefix="sl_")
@@ -564,7 +586,12 @@ def create_slide(
         }
     }
     content_reqs, warnings = create_mod.build_slide_requests(
-        new_slide_id, archetype, dict(content), sub
+        new_slide_id,
+        archetype,
+        dict(content),
+        sub,
+        deck_width_in=deck_width_in,
+        deck_height_in=deck_height_in,
     )
 
     all_reqs = [create_req] + content_reqs

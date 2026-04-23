@@ -1,80 +1,234 @@
 # slides-mcp
 
-An MCP server that lets Claude (and other agents) edit Google Slides through a compact YAML DSL. Built for multi-hundred-turn editing sessions without token bloat, with first-class brand-theme enforcement, presenter-note support, and a true bidirectional agent loop — the agent can **see** the rendered slide (native `ImageContent`) AND **move** shapes (coordinate-level writes) in the same session.
+An MCP server that lets Claude (and other agents) turn prompts into finished Google Slides decks — and edit existing ones — through a compact YAML DSL. Built for multi-hundred-turn editing sessions without token bloat, with first-class brand-theme enforcement, presenter-note support, and a true bidirectional agent loop.
+
+The agent can **see** the rendered slide (native `ImageContent`), **edit** text and shape positions at coordinate level, **compose** new slides from archetype templates, and **choose per-slide visual identity** via content-driven color palettes — all in the same session.
+
+## Quick mental model
+
+```mermaid
+flowchart LR
+    A[Agent<br/>Claude / other LLM] -- "MCP stdio" --> B[slides-mcp server]
+    B -- "Google Slides REST v1<br/>+ Drive v3" --> C[(Your deck)]
+    C -- "rendered PNG<br/>native ImageContent" --> A
+    C -- "compact YAML DSL<br/>~100-150 tok/slide" --> A
+
+    subgraph config["On-disk config — never committed"]
+        T[theme.yaml<br/>palette + fonts]
+        A2[archetypes/*.yaml<br/>layout templates]
+        TK[token.json<br/>OAuth refresh]
+    end
+    config -. read at call time .-> B
+```
+
+Core idea: **a slide is compressed into ~100-150 tokens of structured YAML keyed to (a) an archetype — what KIND of slide this is — and (b) a theme — what colors and fonts the brand uses.** The agent reasons in that compact space; the server translates to Google Slides `batchUpdate` requests.
 
 ## Why this exists
 
-Existing Google Slides MCP servers are thin JSON passthroughs over the Slides REST API. A single text edit costs ~2,000 tokens (1K to read + 1K to write), and a rendered slide costs another round-trip. That math kills 100-turn editing sessions.
+Thin JSON-passthrough Google Slides MCPs cost ~2 KB per edit (1 KB to read + 1 KB to write). A 100-turn editing session dies of token exhaustion. This server projects each slide into ~100-150 tokens and returns rendered thumbnails as native MCP `ImageContent` so the agent can visually verify in one call instead of fetching a URL.
 
-This server projects each slide into ~100–150 tokens of structured YAML, keyed to a small vocabulary of **archetypes** (layout templates) and a **theme** (palette + fonts). Writes produce the updated DSL and (for geometry changes) a rendered thumbnail in a single call. Thumbnails return as native MCP `ImageContent` — no URL-fetch round-trip.
+## The three YAMLs (and one DSL)
 
-## Core ideas
+### 1. `theme.yaml` — your brand
 
-- **Archetypes over layouts.** PowerPoint/Slides layout names are unreliable (one real deck used `CUSTOM_7_1_1_1_1_1_1_1_1_1_1_1_1_1_1_1` as the name for 11 structurally-different slides). The classifier reasons about element topology — column counts, separator lines, picture-to-text ratios — not layout strings.
-- **Theme roles, not hex codes.** A slide references `palette.brand_accent`, not `#3366CC`. Change the theme once; the deck follows. Drift (hex values not in the theme) is surfaced by `audit_deck_colors` and can be accepted via `promote_to_theme`.
-- **Presenter notes are first-class.** Read path preserves the full notes body on every slide (no truncation). Write-side emission is landing incrementally — current state is *detected and flagged* on diff; explicit emission is the next small task.
-- **Bidi geometry.** Opt-in `include_elements=True` on `get_slide` returns `elements: [{id, at:[x,y,w,h]}]`. Editing those values produces `updatePageElementTransform` requests in `RELATIVE` mode, preserving scale and rotation on the underlying shape.
-- **Privacy boundary.** Bundled theme + archetypes are generic. Your real brand theme lives in `~/.config/slides-mcp/themes/` and never enters the repo. Research artifacts, session state, and real client decks stay in local-only directories that are in `.gitignore`.
+```yaml
+name: mybrand
+sub_themes:
+  primary:
+    palette:
+      brand_accent:  "#3366CC"
+      text_body:     "#333333"
+      surface_card:  "#F3F3F3"
+    fonts:
+      display:      {family: "Inter", size_pt: 36, weight: 700}
+      body:         {family: "Inter", size_pt: 18, weight: 400}
+      pill_header:  {family: "Inter", size_pt: 22, weight: 600}
+```
+
+Palette keys are **roles**, not hex codes. DSL references `palette.brand_accent`; change the theme once and every slide follows. Multiple `sub_themes` let one brand carry multiple moods (e.g. `primary` vs `google_cobrand`).
+
+**Where it lives (resolution order, first match wins):**
+
+1. `$SLIDES_MCP_THEMES_DIR`
+2. `$XDG_CONFIG_HOME/slides-mcp/themes` (default `~/.config/slides-mcp/themes`)
+3. `./slides-mcp-themes` (project-local, add it to your own `.gitignore`)
+4. Bundled `src/slides_mcp/themes/example.yaml` (fallback)
+
+Your real brand theme stays outside the repo. The bundled `example.yaml` is a generic placeholder.
+
+### 2. `archetype.yaml` — what KIND of slide
+
+```yaml
+# 3col_pill_cards.yaml — three parallel ideas with colored pill headers
+name: 3col_pill_cards
+slots:
+  required: [title, columns]
+  optional: [lead]
+  constraints: {columns_count: 3}
+
+geometry_defaults:
+  title:     {left_in: 0.9, top_in: 0.6, w_in: 14.4, h_in: 0.9, font_role: display}
+  lead:      {left_in: 0.9, top_in: 1.8, w_in: 14.4, h_in: 1.5, font_role: body}
+  column_1:  {left_in: 0.9,  top_in: 4.0, w_in: 4.6, h_in: 4.5}
+  column_2:  {left_in: 5.7,  top_in: 4.0, w_in: 4.6, h_in: 4.5}
+  column_3:  {left_in: 10.5, top_in: 4.0, w_in: 4.6, h_in: 4.5}
+  pill:         {font_role: pill_header, color_role: brand_accent}
+  title_accent: {h_in: 0.08, w_in: 2.4, top_offset_in: 1.0}
+  column_dot:   {r_in: 0.15}
+```
+
+Archetypes describe layouts in **inches against a 16×9 reference deck**. The server **auto-scales at runtime** to your actual deck size (Google default is 10×5.625, legacy widescreen is 13.33×7.5 — all 16:9 aspect). Authors of new archetypes do not need to worry about deck-size variants.
+
+Nine archetypes ship: `text_heavy_body`, `cover_with_hero`, `3col_pill_cards`, `4col_numbered_flow`, `4col_card_with_image`, `text_left_image_right`, `table_slide`, `logo_strip`, `generic_layout`. Three have content builders wired to `create_slide` in the MVP (see `supported_archetypes` in every `create_slide` response); the rest leave the slide blank and emit a warning for agent fallback to `create_shape` / `exec_batch_update`.
+
+### 3. The DSL — how the agent reads and edits one slide
+
+What `get_slide` returns (a `3col_pill_cards` slide, clean mode):
+
+```yaml
+id: sl_abc123
+layout: 3col_pill_cards
+mode: clean
+title: Theme hygiene
+lead: Brand drift is the default of a team deck. Surface it. Accept what belongs.
+columns:
+  - {pill: audit_deck_colors, body: "Walk every shape. Report off-theme colors..."}
+  - {pill: promote_to_theme,  body: "Accept drift per role. Writes to user config..."}
+  - {pill: Living theme,      body: "Theme is a doc, not a gatekeeper."}
+notes: null
+_object_ids: {title: t_title, paragraphs: [p_1, p_2]}
+```
+
+Edit this YAML, pass it back as `new_dsl_yaml` to `patch_slide`, and the server computes the minimum `batchUpdate` request list. Text edits, element moves, notes updates — one call.
+
+**Clean mode** is the default, ~100-150 tok/slide. **Faithful mode** preserves raw per-element geometry for slides the classifier can't match to a known archetype.
+
+## Core flow — creating a slide from intent
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent
+    participant MCP as slides-mcp
+    participant API as Google Slides API
+
+    Agent->>MCP: create_slide(deck_url, archetype="3col_pill_cards",<br/>content={title, lead, pill_palette, columns})
+    MCP->>API: get_presentation(fields=pageSize)
+    API-->>MCP: pageSize = 10 × 5.625 in
+    Note over MCP: compute sx=10/16, sy=5.625/9<br/>scale archetype geometry
+    MCP->>API: batchUpdate([createSlide, createShape×N,<br/>insertText×N, updateTextStyle×N, ...])
+    API-->>MCP: applied
+    MCP->>API: getThumbnail(slide_id)
+    API-->>MCP: contentUrl (short-lived)
+    MCP-->>Agent: {slide_id, thumbnail_url, warnings}
+    Agent->>MCP: render_thumbnail(slide_id)
+    MCP->>API: getThumbnail + fetch bytes
+    API-->>MCP: PNG bytes
+    MCP-->>Agent: ImageContent (native)
+    Note over Agent: consume image, iterate if wrong
+```
+
+The agent passes **semantic content** (title / lead / per-column pill + body) plus optional **visual intent** (`pill_palette`, `title_accent_hex`, per-column `pill_hex`). The server resolves geometry against the actual deck size and emits a single batched `batchUpdate`.
+
+## Core flow — editing an existing slide
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent
+    participant MCP as slides-mcp
+    participant API as Google Slides API
+
+    Agent->>MCP: get_slide(deck_url, slide_id, mode=clean)
+    MCP->>API: GET slide (FieldMask-projected)
+    API-->>MCP: raw pageElements JSON
+    Note over MCP: normalize → classify →<br/>project to compact YAML
+    MCP-->>Agent: dsl_yaml (~100-150 tok)
+
+    Agent->>Agent: edit the YAML
+    Agent->>MCP: patch_slide(deck_url, slide_id, new_dsl_yaml)
+    Note over MCP: fetch current state, diff against<br/>new YAML → minimum batchUpdate
+    MCP->>API: batchUpdate([insertText / deleteText /<br/>updatePageElementTransform])
+    API-->>MCP: applied
+    MCP->>API: (if geometry changed) getThumbnail
+    MCP-->>Agent: {applied_request_count, new_dsl_yaml, thumbnail}
+```
 
 ## What the MVP does
 
-- Read a deck outline (1 call, whole deck, ~40 tok/slide) — `get_deck_outline`
-- Read one slide as compact YAML (~100–150 tok typical) — `get_slide`
-- Search a deck for text substrings — `search_deck`
-- Patch a slide (text edits + translation of existing elements) in one call — `patch_slide`
-- Render a slide as native `ImageContent` for visual verification — `render_thumbnail`
-- Audit every color and font in the deck against the active theme — `audit_deck_colors`
-- Promote a drift value to the theme as a named role — `promote_to_theme`
-- Copy a deck via Drive — `clone_deck`
-- List themes / archetypes / deck archetype inventory — `list_themes`, `list_archetypes`, `list_deck_layouts`
-- Diagnostic: `auth_status`
+### Write / compose
 
-## What the MVP does NOT do (yet)
+| Tool | What |
+|------|------|
+| `create_slide(deck_url, archetype, content, ...)` | Compose a new slide from archetype + content. Pass `pill_palette` or per-column `pill_hex` to drive visual identity per-slide, no server-side theme edit needed. |
+| `patch_slide(deck_url, slide_id, new_dsl_yaml, ...)` | Apply a DSL diff — text edits + element translations, one call. |
+| `create_shape(deck_url, slide_id, at, shape_type, ...)` | Insert a single shape surgically (when `create_slide` is too coarse). |
+| `duplicate_slot(deck_url, slide_id, source_id, translate_in)` | Duplicate-and-offset an existing element. |
+| `exec_batch_update(deck_url, requests, confirm_destructive?)` | Raw `batchUpdate` escape hatch. `confirm_destructive=True` required for any `deleteObject` / `deleteSlide` / `replaceAllText`. |
+| `clone_deck(src_url, new_title, replacements?)` | Copy a deck via Drive with optional find/replace map. |
 
-By design, the current scope is tightly scoped to "edit an existing brownfield deck." The following are deliberately deferred — if you need them, watch the roadmap issues:
+### Read
 
-- **Creating slides from scratch** (no `distill_doc_to_deck`, no `create_from_markdown`)
-- **Inserting new shapes or icons** via DSL (moving existing elements works; creating new ones doesn't)
-- **Resizing / rotating** elements (warn-only in diff; translation-only writes in MVP)
-- **Archetype swap** ("relayout this slide to 3 columns" is a Phase 2 primitive)
-- **Template replacement map** (`clone_deck` copies only; per-slide text replacements are multiple calls today)
-- **Writing presenter notes** (reads work; write emission is a known ~15-line follow-up)
-- **Slide variant ideation** ("give me 3 alternative versions of this slide")
-- **`.pptx` target** (Google Slides only in this version)
+| Tool | What |
+|------|------|
+| `get_deck_outline(deck_url)` | Whole-deck index, ~40 tok/slide — one call for deck-level reasoning. |
+| `get_slide(deck_url, slide_id, mode?, include_elements?)` | One slide as DSL. `include_elements=True` opts into the geometry channel for shape moves. |
+| `search_deck(deck_url, query)` | Substring search across slide title + body text. |
+| `list_slides_by(deck_url, filters)` | Structural grep — filter slides by archetype, has-image, etc. |
+| `render_thumbnail(deck_url, slide_id, size?)` | Rendered PNG as native `ImageContent`. |
+| `render_thumbnail_url(deck_url, slide_id, size?)` | Same, but returns URL only (no bytes). |
+| `list_themes()` / `list_archetypes()` / `list_deck_layouts(deck_url)` | Registry + deck inventory. |
 
-## Status
+### Theme hygiene
 
-MVP shipped. 13 MCP tools, 45 unit tests, live-verified bidi loop on real decks (read → edit → render → move → re-render, all in token budget). Still pre-v1: no public releases cut, no committed production users, tests cover the core layers but integration tests against live decks are empty. Use at your own risk and expect rough edges — especially on the text-edit side where `replaceAllText` is currently slide-scoped.
+| Tool | What |
+|------|------|
+| `audit_deck_colors(deck_url, theme?, sub_theme?)` | Walk every shape; report colors and fonts not in the active theme, with nearest-role suggestions. |
+| `promote_to_theme(theme, sub_theme, role_name, kind, value)` | Write a drift value into the user theme file under a named role. |
+
+### Diagnostic
+
+| Tool | What |
+|------|------|
+| `auth_status()` | Token path, scopes, expiry — no secrets. |
+
+## What it does NOT (yet)
+
+- **Write presenter notes** (reads work; explicit write emission is a known small follow-up)
+- **Resize / rotate** elements (warn-only in diff; translation-only writes in MVP)
+- **Archetype swap** ("relayout to 3 columns" — Phase 2 primitive)
+- **Hero image / icon asset pipeline** (hero slot in `cover_with_hero` is acknowledged but unimplemented)
+- **`.pptx` target** (Google Slides only)
 
 ## Installation
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/YOUR-USER/slides-mcp.git
+# Install and drop the Claude Code skill (recommended)
+uvx slides-mcp@latest install
+
+# OR clone + run locally
+git clone https://github.com/luutuankiet/slides-mcp.git
 cd slides-mcp
 uv sync
 ```
 
 ## Auth setup (one-time)
 
-The MCP uses user-OAuth to access Google Slides. You need a Google Cloud project with the Slides + Drive APIs enabled and a desktop OAuth client.
+The MCP uses user-OAuth to talk to Google Slides. You need a Google Cloud project with Slides + Drive APIs enabled and a Desktop OAuth client.
 
 1. Create a Google Cloud project; enable `slides.googleapis.com` and `drive.googleapis.com`
 2. Create an OAuth 2.0 client (type: **Desktop app**), download `client_secret.json`
-3. On any machine with a browser, run:
+3. On any machine with a browser:
 
     ```bash
     uv run slides-mcp-auth --client-secret /path/to/client_secret.json --out ./token.json
     ```
 
-    This opens a browser, you consent, and `token.json` is written. The refresh token inside is long-lived.
+    This opens a browser, you consent, `token.json` is written. The refresh token inside is long-lived.
 
-4. If your MCP server runs on a headless host (devcontainer, VPS), copy `token.json` over, e.g. `scp token.json user@devbox:~/.config/slides-mcp/token.json`. Point the server at it via `$SLIDES_MCP_TOKEN_PATH`.
+4. If your MCP server runs headless, copy `token.json` over (`scp token.json devbox:~/.config/slides-mcp/token.json`). Point the server at it via `$SLIDES_MCP_TOKEN_PATH`.
 
 ## MCP client configuration
-
-Add to your MCP client config:
 
 ```json
 {
@@ -83,57 +237,62 @@ Add to your MCP client config:
       "command": "uv",
       "args": ["run", "--directory", "/path/to/slides-mcp", "slides-mcp"],
       "env": {
-        "SLIDES_MCP_TOKEN_PATH": "/path/to/token.json",
-        "SLIDES_MCP_THEMES_DIR": "/path/to/your/private/themes"
+        "SLIDES_MCP_TOKEN_PATH": "/home/me/.config/slides-mcp/token.json",
+        "SLIDES_MCP_THEMES_DIR": "/home/me/.config/slides-mcp/themes"
       }
     }
   }
 }
 ```
 
-## Theme setup
-
-The bundled theme at `src/slides_mcp/themes/example.yaml` is a generic placeholder. For your real brand, drop a theme file into one of these locations (first match wins):
-
-1. `$SLIDES_MCP_THEMES_DIR`
-2. `$XDG_CONFIG_HOME/slides-mcp/themes` (default: `~/.config/slides-mcp/themes`)
-3. `./slides-mcp-themes` (project-local; add it to your own `.gitignore`)
-4. Bundled `example.yaml` (fallback only)
-
-Theme files are never committed to this repo. See `src/slides_mcp/themes/example.yaml` for the schema.
-
-## MCP tool reference
-
-| Tool | Purpose |
-|------|---------|
-| `list_themes()` | All theme files discoverable in the search paths |
-| `list_archetypes()` | Archetype templates (bundled + any user overrides) |
-| `list_deck_layouts(deck_url)` | Archetype inventory of a deck, with counts and slide IDs |
-| `get_deck_outline(deck_url, theme?, sub_theme?)` | Compact index of all slides — one call for whole-deck reasoning |
-| `get_slide(deck_url, slide_id, theme?, sub_theme?, mode?, include_elements?)` | Single slide as YAML; `mode='faithful'` preserves raw geometry; `include_elements=True` opts in to the geometry channel |
-| `search_deck(deck_url, query)` | Find slides whose text contains `query` |
-| `patch_slide(deck_url, slide_id, new_dsl_yaml, theme?, sub_theme?, verify?)` | Apply a DSL patch (text + element translation). Returns new YAML + auto-thumbnail when geometry changed |
-| `render_thumbnail(deck_url, slide_id, size?)` | Rendered PNG as native MCP `ImageContent` |
-| `render_thumbnail_url(deck_url, slide_id, size?)` | Same, but returns a URL (for non-agent callers) |
-| `audit_deck_colors(deck_url, theme?, sub_theme?)` | Report colors and fonts not in the active theme, with nearest-role suggestions |
-| `promote_to_theme(theme, sub_theme, role_name, kind, value)` | Add a drift value (color hex or font spec) to the user theme file under a named role |
-| `clone_deck(src_url, new_title)` | Copy a deck via Drive; returns new deck ID + URL |
-| `auth_status()` | Diagnostic — token path, scopes, expiry (no secrets) |
+| env var | purpose | default |
+|---------|---------|---------|
+| `SLIDES_MCP_TOKEN_PATH` | Absolute path to `token.json` (OAuth) | `./token.json` |
+| `SLIDES_MCP_THEMES_DIR` | Folder with your theme YAML files | — (falls through resolution order) |
+| `XDG_CONFIG_HOME` | Standard XDG config root | `~/.config` |
 
 ## Architecture
 
-A four-layer design:
+Four layers — see `src/slides_mcp/server.py` for the MCP surface, `projection.py` for the compression core, `create.py` for archetype-to-requests composition.
 
-1. **Google Slides + auth** — REST wrapper with FieldMask-projected GETs + `batchUpdate`; token.json load + silent refresh
-2. **DSL projection + diff** — `pageElement` → `FlatShape` → archetype classifier (topology-based) → compact YAML; YAML diff → `batchUpdate` requests
-3. **Theme + archetype registry** — YAML-driven, user-overridable
-4. **FastMCP tool surface** — 13 tools over stdio
+```mermaid
+flowchart TB
+    subgraph L4["Layer 4 — MCP tool surface (server.py)"]
+        T1[create_slide / patch_slide / exec_batch_update]
+        T2[get_slide / get_deck_outline / render_thumbnail]
+        T3[audit_deck_colors / promote_to_theme]
+    end
+    subgraph L3["Layer 3 — Theme + archetype registries"]
+        TH[theme.py<br/>YAML parse + role resolve]
+        AR[archetypes.py<br/>slot schema + geometry]
+    end
+    subgraph L2["Layer 2 — DSL projection + diff"]
+        NM[normalize.py<br/>raw → FlatShape]
+        CL[classify.py<br/>topology → archetype]
+        PR[projection.py<br/>FlatShape → YAML]
+        DF[diff.py<br/>YAML → batchUpdate]
+        AU[audit.py<br/>theme drift walk]
+        CR[create.py<br/>archetype + content → batchUpdate]
+    end
+    subgraph L1["Layer 1 — Google APIs + auth"]
+        SA[slides_api.py<br/>FieldMask GETs + batchUpdate]
+        AT[auth.py / bootstrap.py<br/>OAuth token load]
+    end
 
-See `src/slides_mcp/server.py` for the tool definitions and `src/slides_mcp/projection.py` for the compression core.
+    L4 --> L3
+    L4 --> L2
+    L2 --> L3
+    L4 --> L1
+    L2 --> L1
+```
+
+## Status
+
+Pre-v1, actively iterated. 86 unit tests pass, ruff clean, live-verified bidi loop on real decks. No committed production users. Use at your own risk, expect rough edges. See `releases/` for per-version narratives.
 
 ## Contributing
 
-Early project. Issues welcome. PRs should include tests — the unit suite runs `pytest tests/unit/` in under a second and uses mocked Slides API JSON fixtures (no network).
+Issues welcome. PRs should include tests — `uv run pytest tests/unit/` runs in under a second and uses mocked Slides API JSON fixtures (no network).
 
 ## License
 
