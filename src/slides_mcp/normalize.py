@@ -60,14 +60,33 @@ def _unwrap_dim(d: dict[str, Any] | None) -> float:
     return float(mag or 0)
 
 
-def _extract_transform(transform: dict[str, Any] | None) -> tuple[float, float, bool]:
-    """Return (translate_x_in, translate_y_in, has_rotation)."""
+def _extract_transform(
+    transform: dict[str, Any] | None,
+) -> tuple[float, float, float, float, bool]:
+    """Return (translate_x_in, translate_y_in, scale_x, scale_y, has_rotation).
+
+    Google Slides API expresses a pageElement's rendered geometry as
+    `size × transform` — size is the INTRINSIC (unscaled) width/height,
+    transform.scaleX/scaleY is the per-axis scale applied to map into page
+    coords. scaleX/scaleY are omitted from the payload when identity (1.0);
+    we coerce None → 1.0.
+
+    Callers should multiply size.width by scale_x (and height by scale_y)
+    to get the width/height the agent actually sees on the slide. Using raw
+    `size.magnitude` returns 5.25in for a pill card on a 10×5.625 deck even
+    though the rendered width is 5.25 × (10/16) = 3.281in — the regression
+    this channel exists to fix.
+    """
     if not transform:
-        return 0.0, 0.0, False
+        return 0.0, 0.0, 1.0, 1.0, False
     tx = _emu_in(transform.get("translateX", 0))
     ty = _emu_in(transform.get("translateY", 0))
+    sx_raw = transform.get("scaleX")
+    sy_raw = transform.get("scaleY")
+    sx = float(sx_raw) if sx_raw is not None else 1.0
+    sy = float(sy_raw) if sy_raw is not None else 1.0
     has_rot = bool(transform.get("shearX") or transform.get("shearY"))
-    return tx, ty, has_rot
+    return tx, ty, sx, sy, has_rot
 
 
 def _rgb_to_hex(rgb: dict[str, Any] | None) -> str | None:
@@ -137,9 +156,13 @@ def _extract_text(shape: dict[str, Any]) -> tuple[str, list[TextRun]]:
 def _normalize_element(el: dict[str, Any]) -> FlatShape:
     object_id = el.get("objectId", "")
     size = el.get("size") or {}
-    w_in = _unwrap_dim(size.get("width"))
-    h_in = _unwrap_dim(size.get("height"))
-    left_in, top_in, has_rot = _extract_transform(el.get("transform"))
+    w_intrinsic = _unwrap_dim(size.get("width"))
+    h_intrinsic = _unwrap_dim(size.get("height"))
+    left_in, top_in, scale_x, scale_y, has_rot = _extract_transform(el.get("transform"))
+    # Rendered geometry = intrinsic × scale. When scale is identity (1.0),
+    # rounding preserves the integer/half values fixtures depend on.
+    w_in = round(w_intrinsic * scale_x, 3)
+    h_in = round(h_intrinsic * scale_y, 3)
 
     if "elementGroup" in el:
         children = [_normalize_element(c) for c in el["elementGroup"].get("children") or []]

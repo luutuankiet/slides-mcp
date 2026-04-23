@@ -46,11 +46,17 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `search_deck` | Text substring search across slides |
 | `patch_slide` | Apply DSL patch — text edits + translation writes in one call |
 | `create_slide` | Create a new slide from archetype + semantic content; returns `thumbnail_url` + `slide_id`. Follow up with `render_thumbnail` for visual verification. |
-| `create_shape` | Insert a new shape at `[l,t,w,h]` with optional text / fill |
+| `create_shape` | Insert a new shape at `[l,t,w,h]` with optional text / fill. Shapes-first — prefer over `create_image` for decoration. |
+| `create_image` | Insert a raster (via `image_url`) OR a placeholder RECTANGLE with embedded `[IMAGE: prompt]` text (via `image_prompt`). Dual mode — placeholder is first-class. |
 | `duplicate_slot` | Duplicate an existing pageElement, optionally translate by delta |
+| `delete_slide` | Delete a single slide. Intent-explicit; collapses the 3-call escape-hatch pattern. |
 | `clone_deck` | Drive copy a deck, optionally with cmd+F-style text replacements |
 | `audit_deck_colors` | Walk the whole deck, report colors / fonts not in the active theme |
 | `promote_to_theme` | Add a drift value to the theme as a named role (writes to user config) |
+| `get_theme_brief` | Read the deck's theme brief (hidden meta-slide) — palette + tone carried across all slides. See `rules/theme-coherence.md`. |
+| `set_theme_brief` | Create / replace the deck's theme brief. Appends a hidden `isSkipped` meta-slide. |
+| `update_theme_brief` | Forward-only deep-merge patch on the brief. Existing slides untouched. |
+| `extract_theme_brief` | Brownfield: propose a brief from an existing deck's palette histogram. Does NOT commit. |
 | `render_thumbnail` | Render a slide as PNG and return as native MCP `ImageContent` |
 | `render_thumbnail_url` | Return the short-lived contentUrl only (for non-agent callers) |
 | `exec_batch_update` | Raw batchUpdate passthrough — ALWAYS `dry_run=True` on first call |
@@ -60,9 +66,11 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 Read these before starting. Each rule doc is scoped to one axis of the workflow:
 
 - [rules/workflow.md](rules/workflow.md) — **Start here.** Decision tree: what to use when
+- [rules/theme-coherence.md](rules/theme-coherence.md) — **READ BEFORE GENERATING A DECK.** Cross-slide visual DNA via the hidden meta-slide brief. The `set_theme_brief` → `create_slide` → coherent output flow. Resolution order: per-slide > brief > theme YAML.
+- [rules/visual-presentation.md](rules/visual-presentation.md) — **READ BEFORE GENERATING A DECK.** Renderer-not-brand contract; shapes-first; placeholder-as-deliverable; content-driven palette; structural variety; pacing heuristic. The difference between a presentation and a text doc.
 - [rules/read-deck.md](rules/read-deck.md) — Outline, slide, search, list_slides_by; clean vs faithful; `include_elements` gating
 - [rules/write-deck.md](rules/write-deck.md) — `patch_slide` semantics; text edits, translation, `_object_ids`, `clone_deck` replacements
 - [rules/theme-hygiene.md](rules/theme-hygiene.md) — `audit_deck_colors` + `promote_to_theme`; the living-theme workflow
 - [rules/bidi-edit.md](rules/bidi-edit.md) — The see-and-move loop: `render_thumbnail` + `include_elements` + RELATIVE transforms
-- [rules/generate-from-intent.md](rules/generate-from-intent.md) — **Prompt → slides workflow:** `create_slide` primitive, archetype selection heuristic, plan→create→verify→iterate loop
+- [rules/generate-from-intent.md](rules/generate-from-intent.md) — **Prompt → slides workflow:** `create_slide` primitive, archetype selection heuristic, plan→create→verify→iterate loop. Read visual-presentation.md FIRST.
 - [rules/escape-hatch.md](rules/escape-hatch.md) — `exec_batch_update` safely: `dry_run`, destructive denylist, audit log

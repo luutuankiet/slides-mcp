@@ -1,9 +1,9 @@
 name: cover_with_hero
-description: "Title slide with a large hero image on one side and title/subtitle block on the other."
+description: "Title slide with a hero image (side-panel OR full-bleed) and title/subtitle."
 
 slots:
   required: [title]
-  optional: [subtitle, hero, logo_strip, accent_panel]
+  optional: [subtitle, hero]
 
 slot_schema:
   title: {type: string}
@@ -11,26 +11,27 @@ slot_schema:
   hero:
     type: object
     fields:
-      image: {type: string, required: true, hint: "named asset or drive file id"}
-      side: {type: enum, values: [left, right], default: left}
-  logo_strip:
-    type: list
-    of: {type: string, hint: "named logo id"}
-  accent_panel:
-    type: object
-    fields:
-      side: {type: enum, values: [left, right]}
-      color_role: {type: string, default: brand_accent_dark}
+      url: {type: string, hint: "raster URL; mutually exclusive with `prompt`"}
+      prompt: {type: string, hint: "placeholder mode — emits RECTANGLE + [IMAGE: ...] text"}
+      side: {type: enum, values: [left, right, fullbleed], default: left}
 
+# All coordinates live in the archetype-reference 16×9 frame. The builder
+# applies sx/sy scale at emit time — do not pre-scale.
 geometry_defaults:
-  hero: {w_in: 7.5, h_in: 9.0, top_in: 0.0}
-  text_block: {w_in: 7.5, left_in: 8.5, top_in: 3.0}
-  title: {font_role: display, color_role: text_strong}
-  subtitle: {font_role: body, color_role: text_body, top_offset_in: 1.2}
+  hero: {w_in: 7.5, h_in: 9.0, top_in: 0.0}   # side-mode defaults; fullbleed overrides programmatically
+  text_block: {w_in: 7.0, h_in: 3.0}           # inner text area (title + subtitle stack)
+  title:
+    h_in: 1.5
+    font_role: display
+    color_role: text_strong
+  subtitle:
+    top_offset_in: 1.7     # subtitle top relative to title top (leaves visual gap below title)
+    h_in: 0.8
+    font_role: body
+    color_role: text_body
 
 theme_roles_used:
   - fonts.display
   - fonts.body
   - palette.text_strong
   - palette.text_body
-  - palette.brand_accent_dark

@@ -41,6 +41,7 @@ from . import create as create_mod
 from . import normalize as normalize_mod
 from . import projection as projection_mod
 from . import theme as theme_mod
+from . import theme_brief as theme_brief_mod
 
 mcp = FastMCP("slides-mcp")
 
@@ -521,6 +522,117 @@ def create_shape(
 
 
 @mcp.tool()
+def create_image(
+    deck_url: str,
+    slide_id: str,
+    at: list[float],
+    image_url: str | None = None,
+    image_prompt: str | None = None,
+) -> dict[str, Any]:
+    """Insert an image on a slide — URL mode OR placeholder mode.
+
+    Exactly one of `image_url` / `image_prompt` must be set. The tool's
+    two modes honor Phase 1's shapes-first principle (Decision P, LOG-014):
+    `create_image` is reserved for genuine raster content — photos, logos,
+    diagrams, screenshots. For decoration (header bars, dividers, pills,
+    cards, dots), call `create_shape` instead.
+
+    **URL mode (`image_url` set).** Emits a single `createImage` request.
+    Slides API fetches the URL server-side and embeds the bytes, so the
+    URL must be reachable from Google's backend (public image, signed URL,
+    etc.). Returns `mode: "image"`.
+
+    **Placeholder mode (`image_prompt` set, `image_url` unset).** Emits
+    `createShape(RECTANGLE)` + `insertText("[IMAGE: <prompt>]")`. The
+    placeholder is a first-class deliverable — the agent renders the deck
+    as-is (placeholder visible in thumbnails, showing the intent), and the
+    user fills in the real image later (stock search, AI generation, manual
+    paste). Closes the Phase 1 gap where raster assets aren't always on
+    hand at slide-authoring time, without coupling the server to a stock
+    API or an image-gen pipeline. Returns `mode: "placeholder"`.
+
+    at: [left_in, top_in, width_in, height_in] in inches — same shape as
+    `create_shape.at`. Position is absolute on the page; no scale inference.
+
+    Returns `{deck_id, slide_id, object_id, mode, applied_request_count,
+    thumbnail_url}`. The `thumbnail_url` is Google's short-lived contentUrl
+    for the post-write slide; follow up with `render_thumbnail(slide_id)`
+    for native MCP `ImageContent` — this closes the VISION OUTPUT loop.
+    """
+    if (image_url is None) == (image_prompt is None):
+        raise ValueError(
+            "exactly one of image_url / image_prompt must be set — "
+            "image_url for URL mode, image_prompt for placeholder mode"
+        )
+    if not at or len(at) < 4:
+        raise ValueError("at must be [left_in, top_in, width_in, height_in]")
+    left_in, top_in, w_in, h_in = (float(x) for x in at[:4])
+    if w_in <= 0 or h_in <= 0:
+        raise ValueError("width and height must be positive")
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    new_id = _new_object_id(prefix="i_")
+
+    element_props = {
+        "pageObjectId": slide_id,
+        "size": {
+            "width": {"magnitude": _inch_to_emu(w_in), "unit": "EMU"},
+            "height": {"magnitude": _inch_to_emu(h_in), "unit": "EMU"},
+        },
+        "transform": {
+            "scaleX": 1, "scaleY": 1,
+            "translateX": _inch_to_emu(left_in),
+            "translateY": _inch_to_emu(top_in),
+            "unit": "EMU",
+        },
+    }
+
+    requests: list[dict[str, Any]]
+    if image_url is not None:
+        mode = "image"
+        requests = [{
+            "createImage": {
+                "objectId": new_id,
+                "url": image_url,
+                "elementProperties": element_props,
+            }
+        }]
+    else:
+        mode = "placeholder"
+        assert image_prompt is not None  # narrowed by the earlier XOR check
+        placeholder_text = f"[IMAGE: {image_prompt}]"
+        requests = [
+            {
+                "createShape": {
+                    "objectId": new_id,
+                    "shapeType": "RECTANGLE",
+                    "elementProperties": element_props,
+                }
+            },
+            {
+                "insertText": {
+                    "objectId": new_id,
+                    "text": placeholder_text,
+                    "insertionIndex": 0,
+                }
+            },
+        ]
+
+    slides_api.batch_update(deck_id, requests)
+    thumbnail_url = slides_api.get_thumbnail(deck_id, slide_id, size="MEDIUM")
+
+    return {
+        "deck_id": deck_id,
+        "slide_id": slide_id,
+        "object_id": new_id,
+        "mode": mode,
+        "applied_request_count": len(requests),
+        "thumbnail_url": thumbnail_url,
+        "next_step_hint": f"call render_thumbnail(slide_id={slide_id!r}) for native ImageContent to visually verify",
+    }
+
+
+@mcp.tool()
 def create_slide(
     deck_url: str,
     archetype: str,
@@ -529,6 +641,7 @@ def create_slide(
     theme: str = "example",
     sub_theme: str = "primary",
     slide_id: str | None = None,
+    theme_brief: bool = True,
 ) -> dict[str, Any]:
     """Create a new slide from an archetype + semantic content.
 
@@ -537,40 +650,71 @@ def create_slide(
       `supported_archetypes` (the ones with a content builder) is a subset.
     content: dict keyed by slot name. Shapes per archetype:
       - text_heavy_body: {title: str, paragraphs: [str, ...]}
-      - cover_with_hero: {title: str, subtitle?: str}
+      - cover_with_hero: {title: str, subtitle?: str, title_color_hex?,
+                          subtitle_color_hex?, hero?: {url|prompt, side?}}
       - 3col_pill_cards: {title, lead?, columns: [{pill, body, pill_hex?}, ×3],
                           pill_palette?: [hex, ...],   # cycled per column
                           title_accent_hex?: str}      # defaults to col1 pill
-        Pill colors — priority high→low: per-column pill_hex > pill_palette[i]
-        > theme brand_accent. Pass pill_palette to tell a visual story with
-        distinct hues across columns (e.g. ["#DB4437", "#0F9D58", "#4285F4"])
-        without editing or ingesting a theme. Each column also gets a small
-        colored dot above the pill and a matching title accent bar — so the
-        agent controls the slide's visual identity per-call.
+      - text_left_image_right: {title, body|paragraphs, image?,
+                                accent_color_hex?, body_text_color_hex?}
+      - 4col_numbered_flow: {title, columns: [{num, subtitle, body,
+                             num_color_hex?}, ×4],
+                             numbers_palette?, separator_color_hex?}
+
+    theme_brief (Decision R, Phase 2): when True (default), the server reads
+    the deck's hidden theme-brief meta-slide (if present) and uses it to
+    fall back for unspecified visual fields. Resolution order in every
+    builder:
+
+        per_slide_content > brief.palette.* > theme YAML > safety default
+
+    Map of brief field → builder surfaces it fills:
+      - brief.palette.accent → title accent / divider colors, cover title
+      - brief.palette.text → body text color, cover subtitle
+      - brief.palette.category_set → pill_palette / numbers_palette defaults
+      - brief.palette.surface → reserved (future: slide background fills)
+
+    Set theme_brief=False to force pure Phase-1 behavior (theme YAML fallback
+    only). Brief absence also degrades gracefully to Phase-1 behavior.
+
     insertion_index: 0-indexed slide position. -1 (default) = append at end.
     slide_id: optional suggested objectId for the new slide. Auto-generated
       if omitted.
 
     Returns {slide_id, thumbnail_url, archetype, insertion_index,
-    applied_request_count, warnings, supported_archetypes}. The caller
-    follows up with `render_thumbnail(slide_id)` to consume the rendered PNG
-    as native MCP `ImageContent` — this closes the VISION OUTPUT loop
-    without coupling the write tool to content-block return serialization.
+    applied_request_count, warnings, supported_archetypes, brief_applied}.
+    The caller follows up with `render_thumbnail(slide_id)` to consume the
+    rendered PNG as native MCP `ImageContent` — this closes the VISION OUTPUT
+    loop without coupling the write tool to content-block return
+    serialization.
     """
     deck_id = slides_api.deck_id_from_url(deck_url)
     sub = _sub_theme(theme, sub_theme)
 
-    # Fetch deck metadata once: pageSize (for geometry scaling) + slides count
-    # (for insertion_index=-1 append semantics). pageSize in EMU; convert to
-    # inches. Fallback to 16×9 (archetype reference) if mask misses.
-    prez = slides_api.get_presentation(
-        deck_id, fields="pageSize,slides.objectId"
+    # Fetch deck metadata once: pageSize + slides (for insertion index + brief
+    # scan). Reuses the outline field mask so one call carries text + geometry
+    # + sizing. Fallback to 16×9 if mask misses.
+    fetch_fields = (
+        slides_api.DECK_OUTLINE_FIELDS + ",pageSize"
+        if theme_brief
+        else "pageSize,slides.objectId"
     )
+    prez = slides_api.get_presentation(deck_id, fields=fetch_fields)
     page_size = prez.get("pageSize") or {}
     deck_width_in = (page_size.get("width") or {}).get("magnitude", _REF_WIDTH_EMU)
     deck_height_in = (page_size.get("height") or {}).get("magnitude", _REF_HEIGHT_EMU)
     deck_width_in = deck_width_in / _EMU_PER_INCH
     deck_height_in = deck_height_in / _EMU_PER_INCH
+
+    # Resolve the theme brief if enabled. Absence is silent — the builder
+    # treats `brief=None` as "no brief, use per-call and theme only".
+    brief: dict[str, Any] | None = None
+    brief_applied = False
+    if theme_brief:
+        meta = theme_brief_mod.find_meta_slide(prez)
+        if meta is not None:
+            brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+            brief_applied = brief is not None
 
     resolved_index = insertion_index
     if resolved_index < 0:
@@ -592,6 +736,7 @@ def create_slide(
         sub,
         deck_width_in=deck_width_in,
         deck_height_in=deck_height_in,
+        brief=brief,
     )
 
     all_reqs = [create_req] + content_reqs
@@ -607,6 +752,7 @@ def create_slide(
         "applied_request_count": len(all_reqs),
         "thumbnail_url": thumbnail_url,
         "warnings": warnings,
+        "brief_applied": brief_applied,
         "supported_archetypes": create_mod.supported_archetypes(),
         "next_step_hint": f"call render_thumbnail(slide_id={new_slide_id!r}) for native ImageContent to visually verify",
     }
@@ -664,6 +810,37 @@ def duplicate_slot(
 
 
 @mcp.tool()
+def delete_slide(
+    deck_url: str,
+    slide_id: str,
+) -> dict[str, Any]:
+    """Delete a single slide from the deck.
+
+    Intent-explicit bespoke delete — collapses the 3-call escape-hatch
+    pattern (`get_deck_outline` → `exec_batch_update(deleteObject, confirm_destructive=True)`
+    → `get_deck_outline` verify) into one call. The tool name IS the
+    opt-in; no separate `confirm` flag.
+
+    Emits a single `deleteObject` batchUpdate request. Google Slides API
+    refuses to delete the last remaining slide — that error propagates
+    verbatim if hit. A missing slide_id likewise raises from the API.
+
+    Returns `{deck_id, slide_id, applied_request_count: 1, status: "deleted"}`.
+    Call `get_deck_outline` afterward to see the shorter deck. Other
+    slide objectIds are stable — only the target is gone.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    requests = [{"deleteObject": {"objectId": slide_id}}]
+    slides_api.batch_update(deck_id, requests)
+    return {
+        "deck_id": deck_id,
+        "slide_id": slide_id,
+        "applied_request_count": 1,
+        "status": "deleted",
+    }
+
+
+@mcp.tool()
 def clone_deck(
     src_url: str,
     new_title: str,
@@ -699,6 +876,258 @@ def clone_deck(
         "new_deck_id": new_id,
         "new_deck_url": f"https://docs.google.com/presentation/d/{new_id}/edit",
         "replacements_applied": applied,
+    }
+
+
+# ------------------------------------------------------------------
+# theme_brief — in-deck meta-slide carrying cross-slide visual DNA (Decision R)
+# ------------------------------------------------------------------
+
+
+def _fetch_for_brief(deck_id: str) -> dict[str, Any]:
+    """Fetch the presentation with enough fields to locate + parse a brief.
+
+    DECK_OUTLINE_FIELDS already includes `shape.text.textElements.textRun`
+    which carries the marker + body text. Reusing it keeps the FieldMask list
+    in one place.
+    """
+    return slides_api.get_presentation(deck_id, fields=slides_api.DECK_OUTLINE_FIELDS)
+
+
+def _deck_dimensions_in(deck_id: str) -> tuple[float, float]:
+    """Return deck (width, height) in inches. Falls back to 16:9 reference."""
+    prez = slides_api.get_presentation(deck_id, fields="pageSize")
+    page_size = prez.get("pageSize") or {}
+    w_emu = (page_size.get("width") or {}).get("magnitude", _REF_WIDTH_EMU)
+    h_emu = (page_size.get("height") or {}).get("magnitude", _REF_HEIGHT_EMU)
+    return (w_emu / _EMU_PER_INCH, h_emu / _EMU_PER_INCH)
+
+
+@mcp.tool()
+def get_theme_brief(deck_url: str) -> dict[str, Any]:
+    """Read the active theme brief from the deck's hidden meta-slide, if any.
+
+    Scans the deck for a slide whose title begins with
+    `__SLIDES_MCP_THEME_BRIEF__` and parses the YAML brief from its body text
+    box. Returns `{brief, slide_id, marker_box_id, body_box_id}` when found or
+    `{brief: None, slide_id: None, ...}` when no meta-slide exists yet.
+
+    Agent workflow:
+      1. On session start, call get_theme_brief(deck_url).
+      2. If None → call extract_theme_brief (brownfield) or set_theme_brief
+         (greenfield) to establish one.
+      3. Pass the brief through to every subsequent create_slide call as
+         fallback for unspecified content fields.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+    if meta is None:
+        return {
+            "deck_id": deck_id,
+            "brief": None,
+            "slide_id": None,
+            "marker_box_id": None,
+            "body_box_id": None,
+            "status": "absent",
+            "next_step_hint": "call set_theme_brief(deck_url, brief) to create, or extract_theme_brief(deck_url) to propose one from the existing deck",
+        }
+    brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+    return {
+        "deck_id": deck_id,
+        "brief": brief,
+        "slide_id": meta["slide_id"],
+        "marker_box_id": meta["marker_box_id"],
+        "body_box_id": meta["body_box_id"],
+        "status": "ok" if brief is not None else "unparseable",
+        "warnings": [] if brief is not None else [
+            "meta-slide found but body text did not parse as a brief; use update_theme_brief to repair"
+        ],
+    }
+
+
+@mcp.tool()
+def set_theme_brief(
+    deck_url: str,
+    brief: dict[str, Any],
+) -> dict[str, Any]:
+    """Create or replace the deck's theme brief meta-slide.
+
+    The brief is persisted as YAML in a hidden (`isSkipped=True`) slide at the
+    end of the deck, titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`.
+    Server reads it back on every create_slide call (when Phase 2B lands) to
+    resolve unspecified visual fields.
+
+    brief: a dict. Shape:
+      version: 1
+      palette:
+        surface:  "#0F1A4A"      # header bars, backgrounds
+        accent:   "#E8612E"      # titles, dividers
+        text:     "#000000"      # body text
+        category_set: ["#...", "#...", "#..."]  # N-slot defaults (pills, cols)
+      shape_language: "sharp" | "rounded" | "mixed"
+      numbering_style: "bold" | "outlined" | "dot" | "hidden"
+      tone: "clean editorial"    # free-text; informs image prompts + copy tone
+      image_prompt_style: "photography, warm light"  # free-text
+
+    If a meta-slide already exists, its body is replaced in-place (slide_id
+    preserved). Otherwise a new meta-slide is appended at the end of the deck.
+    Validation failures (bad hex, bad enum, wrong types) raise ValueError —
+    caller should fix the brief and retry.
+
+    Returns {deck_id, slide_id, brief, action: "created"|"updated", warnings}.
+    """
+    ok, errors = theme_brief_mod.validate_brief(brief)
+    if not ok:
+        raise ValueError("invalid theme brief: " + "; ".join(errors))
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+
+    if meta is not None:
+        # Update in-place. If body box is missing (corrupted state), delete
+        # the slide and recreate — cheaper than salvaging.
+        if meta["body_box_id"]:
+            reqs = theme_brief_mod.build_update_brief_requests(
+                meta["body_box_id"], brief
+            )
+            slides_api.batch_update(deck_id, reqs)
+            return {
+                "deck_id": deck_id,
+                "slide_id": meta["slide_id"],
+                "brief": brief,
+                "action": "updated",
+                "applied_request_count": len(reqs),
+                "warnings": [],
+            }
+        # fall through to recreate
+        slides_api.batch_update(
+            deck_id,
+            [{"deleteObject": {"objectId": meta["slide_id"]}}],
+        )
+
+    # Create fresh — append at the end of the deck.
+    deck_w_in, deck_h_in = _deck_dimensions_in(deck_id)
+    prez_after = slides_api.get_presentation(deck_id, fields="slides.objectId")
+    insertion_index = len(prez_after.get("slides", []))
+    slide_id = _new_object_id(prefix=theme_brief_mod.META_SLIDE_ID_PREFIX)
+    marker_id = _new_object_id(prefix=theme_brief_mod.MARKER_BOX_ID_PREFIX)
+    body_id = _new_object_id(prefix=theme_brief_mod.BODY_BOX_ID_PREFIX)
+
+    reqs = theme_brief_mod.build_create_meta_slide_requests(
+        slide_id=slide_id,
+        marker_box_id=marker_id,
+        body_box_id=body_id,
+        brief=brief,
+        deck_width_in=deck_w_in,
+        deck_height_in=deck_h_in,
+        insertion_index=insertion_index,
+    )
+    slides_api.batch_update(deck_id, reqs)
+    return {
+        "deck_id": deck_id,
+        "slide_id": slide_id,
+        "brief": brief,
+        "action": "created",
+        "applied_request_count": len(reqs),
+        "warnings": [],
+    }
+
+
+@mcp.tool()
+def extract_theme_brief(deck_url: str) -> dict[str, Any]:
+    """Brownfield: propose a theme brief from an existing deck's dominant palette.
+
+    Audits the deck's shapes + text (excluding any meta-slide already present)
+    and returns a proposed brief with per-field rationale. Does NOT commit —
+    the agent reviews the proposal with the user, tweaks as needed, then
+    commits via `set_theme_brief(deck_url, brief)`.
+
+    Heuristic:
+      - `palette.surface` = dominant dark fill (header bar / background), else
+        most-common chromatic fill
+      - `palette.accent` = most common chromatic (non-neutral) text color, else
+        most common chromatic fill
+      - `palette.text` = most common dark neutral text color (body text)
+      - `palette.category_set` = top 3-5 distinct chromatic fills (+accent)
+      - `shape_language` = "rounded" if ROUND_RECTANGLE > 65% of shaped; "sharp"
+        if < 25%; else "mixed"
+      - `tone` + `image_prompt_style` = empty strings (agent fills from user intent)
+
+    Returns `{proposed_brief, evidence, confidence, deck_id, next_step_hint}`.
+
+    Evidence carries raw color/shape histograms so the agent can explain + iterate
+    with the user before committing.
+
+    Confidence: "high" (≥3 slides + ≥8 distinct fills), "medium" (≥2 slides + ≥4
+    distinct fills), "low" otherwise. Low-confidence proposals warrant
+    user discussion before committing.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    result = theme_brief_mod.extract_brief_from_prez(prez)
+    return {
+        "deck_id": deck_id,
+        **result,
+        "next_step_hint": (
+            "review proposed_brief with user, tweak as needed, then call "
+            "set_theme_brief(deck_url, brief) to persist. Brief NOT yet committed."
+        ),
+    }
+
+
+@mcp.tool()
+def update_theme_brief(
+    deck_url: str,
+    changes: dict[str, Any],
+) -> dict[str, Any]:
+    """Patch the active theme brief forward-only (non-destructive).
+
+    Deep-merges `changes` into the existing brief and writes the result back
+    to the meta-slide. Existing slides are NOT repainted — only future
+    create_slide calls see the amended brief. For retroactive re-styling,
+    use restyle_slides (Phase 2.5, pending).
+
+    Semantics:
+      - Nested dicts merge recursively (e.g. changes={palette: {accent: X}}
+        replaces only palette.accent, preserves surface/text/category_set)
+      - Lists replace wholesale (no element-wise merge)
+      - None drops a key from the brief
+
+    Errors:
+      - FileNotFoundError if no meta-slide exists. Call set_theme_brief first.
+      - ValueError if the merged brief fails validation.
+
+    Returns {deck_id, slide_id, brief (merged), changes_applied, warnings}.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+    if meta is None:
+        raise FileNotFoundError(
+            "no theme-brief meta-slide on this deck; call set_theme_brief first"
+        )
+    if not meta["body_box_id"]:
+        raise FileNotFoundError(
+            "meta-slide found but body text box is missing; call set_theme_brief to recreate"
+        )
+    existing = theme_brief_mod.parse_brief_body(meta["body_text"]) or {}
+    merged = theme_brief_mod.merge_brief(existing, changes)
+
+    ok, errors = theme_brief_mod.validate_brief(merged)
+    if not ok:
+        raise ValueError("merged brief invalid: " + "; ".join(errors))
+
+    reqs = theme_brief_mod.build_update_brief_requests(meta["body_box_id"], merged)
+    slides_api.batch_update(deck_id, reqs)
+    return {
+        "deck_id": deck_id,
+        "slide_id": meta["slide_id"],
+        "brief": merged,
+        "changes_applied": changes,
+        "applied_request_count": len(reqs),
+        "warnings": [],
     }
 
 

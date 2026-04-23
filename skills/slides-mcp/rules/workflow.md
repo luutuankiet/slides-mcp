@@ -20,8 +20,11 @@ The slides-mcp surface decomposes into four layers. Pick the layer matching your
 | Edit text in an existing slot | `patch_slide` with new DSL | Use `_object_ids` emitted by `get_slide` to scope edits per-objectId |
 | Move an existing shape | `patch_slide` with updated `elements[].at` | RELATIVE transform — scale / rotation preserved |
 | Edit presenter notes | `patch_slide` with new `notes:` DSL field | Writer emits deleteText + insertText on notesPage objectId |
-| Add a new shape to a slide | `create_shape(at, shape_type, text?, fill_role?)` | One call, theme-aware fills |
+| **Create a whole slide from intent** | `create_slide(archetype, content)` | 5 archetypes have builders; see [generate-from-intent.md](generate-from-intent.md) and [visual-presentation.md](visual-presentation.md) |
+| Add a new shape to a slide | `create_shape(at, shape_type, text?, fill_role?)` | One call, theme-aware fills. Shapes-first over images for decoration. |
+| **Add an image (URL or placeholder)** | `create_image(at, image_url OR image_prompt)` | URL → createImage; prompt → RECTANGLE + `[IMAGE: ...]` placeholder. Dual mode — placeholder is first-class. |
 | Duplicate an existing shape | `duplicate_slot(source_id, translate_in?)` | Preserves styling |
+| **Delete a slide** | `delete_slide(slide_id)` | Intent-explicit; collapses 3-call escape-hatch pattern. Google refuses to delete the last slide. |
 | Clone a deck for a new client | `clone_deck(src, new_title, replacements?)` | cmd+F replacement map optional |
 
 ## Layer 3 — Theme hygiene
@@ -46,10 +49,13 @@ See [escape-hatch.md](escape-hatch.md) for the denylist and audit log.
 
 ```
 Need to CHANGE something in a deck?
-├── Text of an existing slot?           → patch_slide
+├── Create a whole slide from intent?    → create_slide (see generate-from-intent.md)
+├── Text of an existing slot?            → patch_slide
 ├── Move a shape?                        → get_slide(include_elements=True), then patch_slide
-├── Add a shape?                         → create_shape
+├── Add a shape (decoration)?            → create_shape
+├── Add an image (raster or placeholder)?→ create_image  (URL → raster; prompt → placeholder)
 ├── Duplicate a shape?                   → duplicate_slot
+├── Delete a slide?                      → delete_slide
 ├── Copy the whole deck?                 → clone_deck
 ├── Off-theme color to accept?           → promote_to_theme
 └── Anything else                        → exec_batch_update (dry_run first)

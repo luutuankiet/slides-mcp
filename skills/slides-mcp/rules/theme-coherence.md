@@ -1,0 +1,164 @@
+# Theme Coherence — Cross-Slide Visual DNA
+
+**Read this BEFORE `generate-from-intent.md` / `visual-presentation.md`.** This
+rule governs the one decision that distinguishes a *deck* from a *pile of
+slides*: a shared visual language across every slide you create.
+
+## The problem this solves
+
+Phase 1 (content-driven per-slide identity) works. Each `create_slide` call
+picks its own palette, gets its own accent, its own pills. But 10 slides with
+10 independent palettes reads as *10 different decks*. A viewer can't tell
+they belong together.
+
+Phase 2 fixes this by persisting a **theme brief** inside the deck itself
+(hidden meta-slide, Decision R). Every subsequent `create_slide` call reads
+the brief and fills unspecified color fields from it. One commitment, coherent
+output.
+
+## The brief — what it carries
+
+```yaml
+version: 1
+palette:
+  surface: "#0F1A4A"    # header bars, backgrounds
+  accent:  "#E8612E"    # titles, dividers, highlights
+  text:    "#000000"    # body text
+  category_set:         # 3-5 hex for N-slot archetypes (pill cards, columns)
+    - "#E8612E"
+    - "#0F1A4A"
+    - "#5A6B9A"
+shape_language: "sharp" | "rounded" | "mixed"
+numbering_style: "bold" | "outlined" | "dot" | "hidden"
+tone: "clean editorial"      # free-text — informs image prompts + copy register
+image_prompt_style: "..."    # free-text — informs [IMAGE: …] placeholder style
+```
+
+**What's NOT in the brief and why:**
+- Fonts — live in the theme YAML layer (`promote_to_theme`). Iterate on palette
+  fast, iterate on typography slow.
+- Archetype preferences — structural pacing stays an agent decision. Brief is
+  *look*, archetype is *rhythm*.
+
+## Resolution order (locked)
+
+Every builder applies this priority for any color/palette field:
+
+```
+per_slide_content  >  brief.palette.*  >  theme YAML  >  safety default
+```
+
+You can still pass `pill_hex`, `title_color_hex`, `accent_color_hex`, etc.
+per-call — those WIN over the brief. The brief is a **default**, not a
+gatekeeper. Pass overrides when the slide genuinely needs a different accent
+(a "danger" column in red, a dark-mode fullbleed cover, etc.). Omit them
+everywhere else and the brief keeps the deck coherent.
+
+## The 4 brief tools
+
+| Tool | Purpose |
+|---|---|
+| `get_theme_brief(deck_url)` | Read the active brief. Returns `{brief, slide_id, status}`. `status: "absent"` when the deck has no meta-slide yet. |
+| `set_theme_brief(deck_url, brief)` | Create (first time) or replace the brief on the deck. Appends a hidden (`isSkipped`) slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. Returns the meta-slide `slide_id`. |
+| `update_theme_brief(deck_url, changes)` | **Forward-only** deep-merge patch. Existing slides untouched — future `create_slide` calls see the amended brief. |
+| `extract_theme_brief(deck_url)` | **Brownfield.** Audit an existing deck (Joon-style deck without a brief), return a proposed brief with evidence histograms. Does NOT commit — agent reviews with user, tweaks, then calls `set_theme_brief`. |
+
+## Workflow — greenfield (new deck, user gives intent)
+
+```
+1. get_theme_brief(deck_url)
+     → status: "absent"
+
+2. Translate user intent → brief values
+     - User: "Q2 QBR, clean editorial tone, navy + orange"
+     - Brief: {palette: {surface: #0F1A4A, accent: #E8612E, text: #000000,
+                         category_set: [#E8612E, #0F1A4A, #5A6B9A]},
+               shape_language: "sharp", tone: "clean editorial", ...}
+
+3. set_theme_brief(deck_url, brief)
+     → returns slide_id; brief now lives in the deck
+
+4. create_slide(..., archetype=X, content={title, body, ...})
+     → brief auto-resolves every unset color
+     → response includes `brief_applied: true`
+
+5. Continue creating slides — no palette repetition per call
+
+6. If user pivots ("make the accent warmer"):
+     update_theme_brief(deck_url, {palette: {accent: "#D64518"}})
+     → subsequent creates use new accent; existing slides unchanged
+```
+
+## Workflow — brownfield (existing deck inherited / imported)
+
+```
+1. get_theme_brief(deck_url)
+     → status: "absent"
+
+2. extract_theme_brief(deck_url)
+     → proposed_brief + evidence histograms + confidence rating
+
+3. Present proposal to user with the evidence:
+     "Based on 48 slides: surface navy (#111335), accent orange (#EE5619).
+      Top fills: [...]. Adjust anything?"
+
+4. User tweaks → agent amends locally, then:
+     set_theme_brief(deck_url, tweaked_brief)
+
+5. From here on: same as greenfield step 4+
+```
+
+## When to pass per-slide overrides (the other 20%)
+
+Use per-slide content fields (NOT brief) when the slide is visually distinct
+by design:
+
+- **Danger / warning column**: `pill_hex: "#DB4437"` on one column of a 3col
+- **Hero cover with bright image**: `title_color_hex: "#FFFFFF"` so text reads
+  over the fullbleed raster
+- **Section opener** where you genuinely want a different accent to signal a
+  topic shift
+- **User asked for a one-off variation** ("make this slide red to emphasize
+  risk")
+
+If you find yourself passing the same `accent_color_hex` on every call —
+STOP. That belongs in the brief. Commit it once via `set_theme_brief`, then
+let the default flow.
+
+## The `brief_applied` response flag
+
+Every `create_slide` response now carries `brief_applied: bool`. If it's
+false when you expected the brief to drive the palette, check:
+
+1. Was `theme_brief=True` (the default)? You only set `False` when
+   deliberately bypassing for regression testing.
+2. Did `get_theme_brief` return `status: "absent"`? No meta-slide = no
+   brief. Call `set_theme_brief` first.
+3. Is the brief body corrupted? `get_theme_brief` returns
+   `status: "unparseable"` in that case. Use `update_theme_brief` to
+   repair (or delete the meta-slide and `set_theme_brief` fresh).
+
+## Deletion safety — what if someone removes the meta-slide?
+
+- The meta-slide title carries a literal `DO NOT DELETE` warning.
+- Body text carries a visible warning preamble.
+- `isSkipped=True` hides it from presentation mode — devs editing the deck
+  see it but it doesn't appear in the actual presentation.
+- If it's deleted anyway: Google Slides version history restores it. The
+  agent also degrades gracefully — `create_slide` without a brief falls
+  back to theme YAML (pre-Phase-2 behavior). No hard failure.
+
+## Anti-patterns
+
+1. **Carrying the brief in your conversation state instead of in the deck.**
+   You'll forget after compaction / fork. The deck IS the source of truth.
+2. **Extracting a brief and immediately committing without showing the user.**
+   The extraction is a PROPOSAL. Discussion + tweaks are the point — the
+   agent owns the legwork, the user owns the aesthetic call.
+3. **Passing `pill_palette` on every `create_slide` call.** That's a brief,
+   not a per-slide choice. Commit it once.
+4. **Using `update_theme_brief` to retroactively repaint existing slides.**
+   It doesn't — it's forward-only. Retroactive repaint needs `restyle_slides`
+   (Phase 2.5, not yet shipped). If you need to repaint now, delete the
+   affected slides and recreate with the new brief, or use
+   `exec_batch_update` / `patch_slide` per slide.

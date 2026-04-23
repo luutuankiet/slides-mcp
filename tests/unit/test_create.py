@@ -24,6 +24,8 @@ def test_supported_archetypes_covers_mvp():
     assert "text_heavy_body" in supp
     assert "cover_with_hero" in supp
     assert "3col_pill_cards" in supp
+    assert "text_left_image_right" in supp  # LOG-016 Step 5
+    assert "4col_numbered_flow" in supp  # LOG-016 Step 7
 
 
 def test_text_heavy_body_happy_path(sub_primary):
@@ -139,6 +141,143 @@ def test_cover_with_hero_basic(sub_primary):
     kinds = _request_kinds(reqs)
     assert kinds.count("createShape") == 2  # title + subtitle
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# cover_with_hero rewrite (LOG-016 Step 6)
+# ---------------------------------------------------------------------------
+
+
+def test_cover_with_hero_url_mode_emits_createimage_plus_text(sub_primary):
+    """hero with url → createImage request for the image slot + 2 text slots
+    for title/subtitle. Hero is emitted first for z-order."""
+    content = {
+        "title": "Agentic analytics",
+        "subtitle": "From insight to impact",
+        "hero": {"url": "https://example.test/cover.jpg", "side": "left"},
+    }
+    reqs, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content=content, sub=sub_primary,
+    )
+    assert warnings == []
+    imgs = _create_image_reqs(reqs)
+    assert len(imgs) == 1
+    assert imgs[0]["url"] == "https://example.test/cover.jpg"
+    # Hero is first in the request list (z-order: back)
+    for i, r in enumerate(reqs):
+        if "createImage" in r:
+            # all text createShapes come AFTER this index
+            for j in range(i):
+                assert "createImage" not in reqs[j]
+            break
+
+
+def test_cover_with_hero_placeholder_mode_works(sub_primary):
+    """hero with prompt → RECTANGLE placeholder with [IMAGE: ...] text."""
+    content = {
+        "title": "Launch partners",
+        "hero": {"prompt": "team photo with branded backdrop", "side": "right"},
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content=content, sub=sub_primary,
+    )
+    assert len(_create_image_reqs(reqs)) == 0
+    placeholder_texts = [
+        ins["text"] for ins in _insert_text_reqs(reqs)
+        if "[IMAGE:" in ins.get("text", "")
+    ]
+    assert placeholder_texts == ["[IMAGE: team photo with branded backdrop]"]
+
+
+def test_cover_with_hero_side_left_vs_right_swaps_text_horizontal_position(sub_primary):
+    """side='left' puts text on the right, side='right' puts text on the left."""
+    base = {"title": "t", "subtitle": "s", "hero": {"url": "https://x/y.jpg"}}
+
+    reqs_left, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content={**base, "hero": {**base["hero"], "side": "left"}}, sub=sub_primary,
+    )
+    reqs_right, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content={**base, "hero": {**base["hero"], "side": "right"}}, sub=sub_primary,
+    )
+
+    # Title is the first createShape after the hero image
+    title_left_req = next(r["createShape"] for r in reqs_left if "createShape" in r)
+    title_right_req = next(r["createShape"] for r in reqs_right if "createShape" in r)
+    tx_left = title_left_req["elementProperties"]["transform"]["translateX"]
+    tx_right = title_right_req["elementProperties"]["transform"]["translateX"]
+    # side='left' → hero on left → title on right (large X)
+    # side='right' → hero on right → title on left (small X)
+    assert tx_left > tx_right
+
+
+def test_cover_with_hero_fullbleed_spans_full_16x9(sub_primary):
+    """side='fullbleed' → hero image covers the entire 16×9 archetype frame,
+    and the text block overlays centered."""
+    content = {
+        "title": "Q2 planning",
+        "hero": {"url": "https://example.test/bg.jpg", "side": "fullbleed"},
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content=content, sub=sub_primary,
+    )
+    img = _create_image_reqs(reqs)[0]
+    size = img["elementProperties"]["size"]
+    transform = img["elementProperties"]["transform"]
+    # Hero origin at 0,0
+    assert transform["translateX"] == 0
+    assert transform["translateY"] == 0
+    # Hero size = 16×9 inches in EMU
+    assert size["width"]["magnitude"] == int(16.0 * 914400)
+    assert size["height"]["magnitude"] == int(9.0 * 914400)
+
+
+def test_cover_with_hero_content_driven_text_colors(sub_primary):
+    """title_color_hex + subtitle_color_hex are emitted as updateTextStyle
+    foregroundColor overrides. No hardcoded hex in the builder."""
+    content = {
+        "title": "Dark cover",
+        "subtitle": "white on black",
+        "hero": {"prompt": "dark cityscape", "side": "fullbleed"},
+        "title_color_hex": "#FFFFFF",
+        "subtitle_color_hex": "#CCCCCC",
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content=content, sub=sub_primary,
+    )
+    # Scan every updateTextStyle with foregroundColor
+    styled = []
+    for r in reqs:
+        uts = r.get("updateTextStyle")
+        if uts and "foregroundColor" in uts["fields"]:
+            rgb = uts["style"]["foregroundColor"]["opaqueColor"]["rgbColor"]
+            styled.append(rgb)
+    # Should have exactly 2 color-styled runs (title + subtitle)
+    assert len(styled) == 2
+    # White: all 1.0
+    whites = [s for s in styled if s.get("red") == 1.0 and s.get("green") == 1.0 and s.get("blue") == 1.0]
+    assert len(whites) == 1
+    # Light gray ~ 0.8 on all channels
+    grays = [s for s in styled if round(s.get("red", 0), 1) == 0.8]
+    assert len(grays) == 1
+
+
+def test_cover_with_hero_no_hero_still_builds_title_subtitle(sub_primary):
+    """Hero is optional: title + subtitle should still build without it."""
+    content = {"title": "Text-only cover", "subtitle": "no image"}
+    reqs, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="cover_with_hero",
+        content=content, sub=sub_primary,
+    )
+    assert warnings == []
+    assert len(_create_image_reqs(reqs)) == 0
+    shapes = _create_shape_reqs(reqs)
+    assert len(shapes) == 2  # title + subtitle
 
 
 def test_unsupported_archetype_yields_warning_empty_requests(sub_primary):
@@ -425,3 +564,484 @@ def test_pill_text_color_emits_opaque_white(sub_primary):
     assert rgb["blue"] == 1.0
     # fields mask must include foregroundColor so the style lands
     assert "foregroundColor" in pill_style["fields"]
+
+
+def test_updateshapeproperties_carries_autofit_none(sub_primary):
+    """Regression guard for the 2026-04-23 autofit-batch-rejection bug.
+
+    Google Slides API (post-2026-04 update) auto-applies a non-NONE autofit
+    on text-containing shapes during insertText. Subsequent
+    updateShapeProperties calls in the SAME batchUpdate then fail with
+    'Autofit types other than NONE are not supported' even though the
+    field mask never touches autofit.
+
+    Mitigation: every updateShapeProperties emitted by `_build_text_slot`
+    explicitly sets autofit.autofitType=NONE alongside the fill, with the
+    field mask including 'autofit.autofitType'. This forces the shape into
+    the supported state regardless of what Google's batch processor would
+    have inferred.
+
+    This test asserts the contract on EVERY updateShapeProperties emitted
+    by 3col_pill_cards (which has the largest fan-out: title accent +
+    3 dots + 3 pills = 7 fill updates).
+    """
+    content = {
+        "title": "x",
+        "columns": [
+            {"pill": "p1", "body": "b1"},
+            {"pill": "p2", "body": "b2"},
+            {"pill": "p3", "body": "b3"},
+        ],
+    }
+    reqs, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="3col_pill_cards", content=content, sub=sub_primary
+    )
+    assert warnings == []
+    usp_reqs = [r["updateShapeProperties"] for r in reqs if "updateShapeProperties" in r]
+    assert len(usp_reqs) == 7, "3col_pill_cards should emit 7 updateShapeProperties (title accent + 3 dots + 3 pills)"
+    for usp in usp_reqs:
+        assert "autofit.autofitType" in usp["fields"], (
+            f"field mask {usp['fields']!r} missing autofit.autofitType — "
+            f"will fail Google Slides API batch validation"
+        )
+        autofit = usp["shapeProperties"].get("autofit") or {}
+        assert autofit.get("autofitType") == "NONE", (
+            f"autofit.autofitType is {autofit.get('autofitType')!r}, "
+            f"must be 'NONE' (only supported write value)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# text_left_image_right builder (LOG-016 Step 5)
+# ---------------------------------------------------------------------------
+
+
+def _create_shape_reqs(reqs: list[dict]) -> list[dict]:
+    return [r["createShape"] for r in reqs if "createShape" in r]
+
+
+def _create_image_reqs(reqs: list[dict]) -> list[dict]:
+    return [r["createImage"] for r in reqs if "createImage" in r]
+
+
+def _insert_text_reqs(reqs: list[dict]) -> list[dict]:
+    return [r["insertText"] for r in reqs if "insertText" in r]
+
+
+def _translate_x_for(reqs: list[dict], object_id: str) -> float | None:
+    """Pull translateX (in EMU) of the given objectId from its createShape
+    or createImage request. Returns None if not found."""
+    for r in reqs:
+        for kind in ("createShape", "createImage"):
+            if kind in r and r[kind].get("objectId") == object_id:
+                return r[kind]["elementProperties"]["transform"]["translateX"]
+    return None
+
+
+def test_text_left_image_right_happy_path_with_url(sub_primary):
+    """URL mode: one createImage request with the given URL. Title + body
+    emit their usual createShape + insertText + updateTextStyle bursts."""
+    content = {
+        "title": "Persona-driven insights",
+        "body": "The agent tailors daily digests to each persona.",
+        "image": {"url": "https://example.test/persona.jpg"},
+    }
+    reqs, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    assert warnings == []
+    imgs = _create_image_reqs(reqs)
+    assert len(imgs) == 1
+    assert imgs[0]["url"] == "https://example.test/persona.jpg"
+    # Title + body = 2 createShape text slots
+    shapes = _create_shape_reqs(reqs)
+    assert len(shapes) == 2
+    inserts = _insert_text_reqs(reqs)
+    # Title + body → 2 inserts. No placeholder text.
+    assert len(inserts) == 2
+    # No "[IMAGE:" marker since URL mode was used
+    assert not any("[IMAGE:" in ins.get("text", "") for ins in inserts)
+
+
+def test_text_left_image_right_placeholder_mode(sub_primary):
+    """Placeholder mode: image slot emits createShape(RECTANGLE) + insertText
+    with '[IMAGE: <prompt>]'. No createImage request."""
+    content = {
+        "title": "Daily digest",
+        "body": "Morning summary of key metrics.",
+        "image": {"prompt": "a morning dashboard on a phone screen"},
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    imgs = _create_image_reqs(reqs)
+    assert len(imgs) == 0  # no raster mode
+    inserts = _insert_text_reqs(reqs)
+    placeholder_texts = [ins["text"] for ins in inserts if "[IMAGE:" in ins["text"]]
+    assert len(placeholder_texts) == 1
+    assert placeholder_texts[0] == "[IMAGE: a morning dashboard on a phone screen]"
+
+
+def test_text_left_image_right_accepts_bare_string_image_as_url(sub_primary):
+    """Archetype YAML hint calls `image` a string. For back-compat the builder
+    treats a bare string as a URL."""
+    content = {
+        "title": "x",
+        "body": "y",
+        "image": "https://example.test/a.png",
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    imgs = _create_image_reqs(reqs)
+    assert len(imgs) == 1
+    assert imgs[0]["url"] == "https://example.test/a.png"
+
+
+def test_text_left_image_right_joins_paragraphs_into_body(sub_primary):
+    """`paragraphs` is joined with blank lines when `body` is absent."""
+    content = {
+        "title": "Multi-para",
+        "paragraphs": ["Alpha.", "Beta.", "Gamma."],
+        "image": {"prompt": "x"},
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    body_insert = next(
+        ins for ins in _insert_text_reqs(reqs)
+        if "Alpha" in ins.get("text", "")
+    )
+    assert body_insert["text"] == "Alpha.\n\nBeta.\n\nGamma."
+
+
+def test_text_left_image_right_image_side_swaps_horizontal_positions(sub_primary):
+    """image_side='left' moves the image slot to the left edge and the text
+    block to the right — swap happens at translateX level."""
+    base_content = {"title": "t", "body": "b", "image": {"url": "https://x/y.jpg"}}
+
+    # Default (right) — image on the right, text block on the left
+    reqs_right, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content={**base_content, "image_side": "right"}, sub=sub_primary,
+    )
+    img_right = _create_image_reqs(reqs_right)[0]
+    img_right_tx = img_right["elementProperties"]["transform"]["translateX"]
+    # Image on right side: translateX should be > deck_midpoint (half of 16in = 8in in EMU)
+    assert img_right_tx > int(7.0 * 914400)
+
+    # Left — image on left, text on right
+    reqs_left, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content={**base_content, "image_side": "left"}, sub=sub_primary,
+    )
+    img_left = _create_image_reqs(reqs_left)[0]
+    img_left_tx = img_left["elementProperties"]["transform"]["translateX"]
+    assert img_left_tx < int(2.0 * 914400)  # image on left edge (≤ 2in)
+    # Swap invariant: image-left's X < image-right's X
+    assert img_left_tx < img_right_tx
+
+
+def test_text_left_image_right_accent_color_emits_bar(sub_primary):
+    """When accent_color_hex is set, a small colored RECTANGLE lands under
+    the title. Invariant: the fill hex appears in an updateShapeProperties
+    request."""
+    content = {
+        "title": "Accent demo",
+        "body": "x",
+        "image": {"prompt": "x"},
+        "accent_color_hex": "#FF5733",
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    usps = [r["updateShapeProperties"] for r in reqs if "updateShapeProperties" in r]
+    # Find the one whose color is #FF5733 (approx red=1.0, green=0.341, blue=0.2)
+    accent = None
+    for usp in usps:
+        sp = usp["shapeProperties"]
+        color = ((sp.get("shapeBackgroundFill") or {}).get("solidFill") or {}).get("color") or {}
+        rgb = color.get("rgbColor") or {}
+        if rgb.get("red") == 1.0 and round(rgb.get("green", 0), 2) == 0.34:
+            accent = usp
+            break
+    assert accent is not None, "accent_color_hex fill not emitted"
+
+
+def test_text_left_image_right_body_text_color_applied(sub_primary):
+    """body_text_color_hex sets foregroundColor on the body text run —
+    fields mask must include foregroundColor."""
+    content = {
+        "title": "t",
+        "body": "coloured",
+        "image": {"prompt": "x"},
+        "body_text_color_hex": "#0066CC",
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    # Find the body's insertText to get its objectId (body shares the id
+    # with the createShape that immediately preceded it)
+    body_insert = next(
+        ins for ins in _insert_text_reqs(reqs) if ins["text"] == "coloured"
+    )
+    body_oid = body_insert["objectId"]
+    # Then find the updateTextStyle for that objectId
+    body_style = None
+    for r in reqs:
+        uts = r.get("updateTextStyle")
+        if uts and uts["objectId"] == body_oid:
+            body_style = uts
+            break
+    assert body_style is not None, "body updateTextStyle missing"
+    assert "foregroundColor" in body_style["fields"]
+    rgb = body_style["style"]["foregroundColor"]["opaqueColor"]["rgbColor"]
+    # #0066CC = (0, 0.4, 0.8) approximately
+    assert rgb["red"] == 0.0
+    assert round(rgb["green"], 2) == 0.4
+    assert round(rgb["blue"], 2) == 0.8
+
+
+def test_text_left_image_right_no_image_builds_text_only(sub_primary):
+    """When neither image url nor prompt is provided, the slide renders
+    text-only — no createImage, no placeholder [IMAGE:] marker."""
+    content = {
+        "title": "Text only",
+        "body": "no image here",
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    assert len(_create_image_reqs(reqs)) == 0
+    assert not any("[IMAGE:" in ins.get("text", "") for ins in _insert_text_reqs(reqs))
+
+
+def test_text_left_image_right_caption_emitted_when_image_present(sub_primary):
+    """image_caption is rendered below the image when an image slot exists.
+    Skipped when there's no image (caption-without-image is pointless)."""
+    with_img = {
+        "title": "t",
+        "body": "b",
+        "image": {"prompt": "x"},
+        "image_caption": "Fig. 1: the thing.",
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=with_img, sub=sub_primary,
+    )
+    caption_inserts = [
+        ins for ins in _insert_text_reqs(reqs)
+        if ins["text"] == "Fig. 1: the thing."
+    ]
+    assert len(caption_inserts) == 1
+
+    # Same content without image → no caption emitted
+    no_img = {"title": "t", "body": "b", "image_caption": "orphan caption"}
+    reqs2, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=no_img, sub=sub_primary,
+    )
+    assert not any(
+        ins.get("text") == "orphan caption" for ins in _insert_text_reqs(reqs2)
+    )
+
+
+def test_text_left_image_right_missing_title_warns(sub_primary):
+    """The archetype YAML lists `title` as required; omitting it warns."""
+    content = {"body": "titleless"}
+    _, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="text_left_image_right",
+        content=content, sub=sub_primary,
+    )
+    assert any("title" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# 4col_numbered_flow builder (LOG-016 Step 7)
+# ---------------------------------------------------------------------------
+
+
+def _num_run_colors(reqs: list[dict]) -> list[dict]:
+    """Collect foregroundColor rgbColor dicts from every updateTextStyle
+    that sets a color. Used to assert num-color cycling."""
+    out = []
+    for r in reqs:
+        uts = r.get("updateTextStyle")
+        if uts and "foregroundColor" in uts.get("fields", ""):
+            rgb = uts["style"]["foregroundColor"]["opaqueColor"]["rgbColor"]
+            out.append(rgb)
+    return out
+
+
+def test_4col_numbered_flow_happy_path(sub_primary):
+    """4 columns → 4 num-color updateTextStyle + title + 4 subtitle + 4 body
+    = 13 createShape (title + 4×num + 4×subtitle + 4×body) + 3 separator
+    rectangles, by default."""
+    content = {
+        "title": "Priorities from last QBR",
+        "columns": [
+            {"num": "01", "subtitle": "A", "body": "aa"},
+            {"num": "02", "subtitle": "B", "body": "bb"},
+            {"num": "03", "subtitle": "C", "body": "cc"},
+            {"num": "04", "subtitle": "D", "body": "dd"},
+        ],
+    }
+    reqs, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    assert warnings == []
+    shapes = _create_shape_reqs(reqs)
+    # 13 text shapes (title + 4×[num + subtitle + body]) + 3 separators = 16
+    assert len(shapes) == 16
+    # Default separators ON → 3 vertical RECTANGLEs between 4 columns
+    sep_fills = [
+        r for r in reqs
+        if "updateShapeProperties" in r
+        and "shapeBackgroundFill" in r["updateShapeProperties"].get("shapeProperties", {})
+    ]
+    # 3 separator fills only (num text doesn't use fill)
+    assert len(sep_fills) == 3
+
+
+def test_4col_numbered_flow_numbers_palette_cycles_across_columns(sub_primary):
+    """`numbers_palette` assigns a distinct color to each column's num text
+    in cycle order."""
+    palette = ["#DB4437", "#0F9D58", "#4285F4", "#F4B400"]  # Google brand quad
+    content = {
+        "title": "t",
+        "columns": [{"num": str(i), "subtitle": "s", "body": "b"} for i in range(4)],
+        "numbers_palette": palette,
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    # Expect exactly 4 updateTextStyle with foregroundColor (one per num)
+    colors = _num_run_colors(reqs)
+    assert len(colors) == 4
+    # Hex → rgb expected mapping (hex_to_rgb normalization same as in create.py)
+    def approx(rgb, r, g, b):
+        return (round(rgb["red"], 2) == r
+                and round(rgb["green"], 2) == g
+                and round(rgb["blue"], 2) == b)
+    # #DB4437 ≈ (0.86, 0.27, 0.22)
+    assert approx(colors[0], 0.86, 0.27, 0.22)
+    # #0F9D58 ≈ (0.06, 0.62, 0.35)
+    assert approx(colors[1], 0.06, 0.62, 0.35)
+    # #4285F4 ≈ (0.26, 0.52, 0.96)
+    assert approx(colors[2], 0.26, 0.52, 0.96)
+    # #F4B400 ≈ (0.96, 0.71, 0.0)
+    assert approx(colors[3], 0.96, 0.71, 0.0)
+
+
+def test_4col_numbered_flow_per_column_num_hex_beats_palette(sub_primary):
+    """col['num_color_hex'] wins over numbers_palette[i]."""
+    content = {
+        "title": "t",
+        "columns": [
+            {"num": "01", "subtitle": "s", "body": "b"},  # → palette[0]
+            {"num": "02", "subtitle": "s", "body": "b", "num_color_hex": "#FF00FF"},  # → override
+            {"num": "03", "subtitle": "s", "body": "b"},  # → palette[2]
+            {"num": "04", "subtitle": "s", "body": "b"},  # → palette[3]
+        ],
+        "numbers_palette": ["#DB4437", "#0F9D58", "#4285F4", "#F4B400"],
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    colors = _num_run_colors(reqs)
+    # col2 (index 1) should be magenta (1, 0, 1), not palette[1] (green)
+    assert colors[1]["red"] == 1.0
+    assert colors[1]["green"] == 0.0
+    assert colors[1]["blue"] == 1.0
+
+
+def test_4col_numbered_flow_separators_can_be_disabled(sub_primary):
+    """`separators: False` drops the vertical divider RECTANGLEs."""
+    content = {
+        "title": "t",
+        "columns": [
+            {"num": "01", "subtitle": "s", "body": "b"},
+            {"num": "02", "subtitle": "s", "body": "b"},
+            {"num": "03", "subtitle": "s", "body": "b"},
+            {"num": "04", "subtitle": "s", "body": "b"},
+        ],
+        "separators": False,
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    # No updateShapeProperties with shapeBackgroundFill (separator fills are the
+    # only fills this builder emits — num/subtitle/body are TEXT_BOX text slots)
+    sep_fills = [
+        r for r in reqs
+        if "updateShapeProperties" in r
+        and "shapeBackgroundFill" in r["updateShapeProperties"].get("shapeProperties", {})
+    ]
+    assert len(sep_fills) == 0
+
+
+def test_4col_numbered_flow_separator_color_hex_applied(sub_primary):
+    """`separator_color_hex` colors the vertical dividers directly."""
+    content = {
+        "title": "t",
+        "columns": [
+            {"num": "01", "subtitle": "s", "body": "b"},
+            {"num": "02", "subtitle": "s", "body": "b"},
+        ],
+        "separator_color_hex": "#FF0000",  # pure red
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    sep_fills = [
+        r["updateShapeProperties"] for r in reqs
+        if "updateShapeProperties" in r
+        and "shapeBackgroundFill" in r["updateShapeProperties"].get("shapeProperties", {})
+    ]
+    assert len(sep_fills) == 1  # 2 columns → 1 separator
+    rgb = (
+        sep_fills[0]["shapeProperties"]["shapeBackgroundFill"]
+        ["solidFill"]["color"]["rgbColor"]
+    )
+    assert rgb["red"] == 1.0
+    assert rgb.get("green", 0) == 0.0
+    assert rgb.get("blue", 0) == 0.0
+
+
+def test_4col_numbered_flow_truncates_extra_columns(sub_primary):
+    """If content["columns"] has > 4 entries, only the first 4 render."""
+    content = {
+        "title": "too many",
+        "columns": [
+            {"num": f"{i+1:02d}", "subtitle": "s", "body": "b"} for i in range(6)
+        ],
+    }
+    reqs, _ = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    # Only 4 num text runs should be colored
+    colors = _num_run_colors(reqs)
+    assert len(colors) == 4
+
+
+def test_4col_numbered_flow_missing_required_slots_warns(sub_primary):
+    """columns is required per YAML; omitting it warns."""
+    content = {"title": "no cols"}
+    _, warnings = create_mod.build_slide_requests(
+        slide_id="s", archetype_name="4col_numbered_flow",
+        content=content, sub=sub_primary,
+    )
+    assert any("columns" in w for w in warnings)
