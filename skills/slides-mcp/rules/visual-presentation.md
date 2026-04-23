@@ -229,3 +229,16 @@ dashboard screen"}` if no screenshot URL is at hand.
   there's a narrative reason. Run `get_deck_outline` to audit.
 - **Hardcoded fill hex in bundled code** — if you're writing server-side
   code, this is a review-fail. Content-driven only.
+
+---
+
+## v0.6.0 addendum — icons are vanilla too
+
+The "shapes-first, image-placeholder-as-fallback" rule extends to icons. Use
+`list_icons()` → `create_icon()` (or `3col_pill_cards.icon_names`) before
+reaching for `create_image([IMAGE: decorative-arrow])`. Icons are native Slides
+shapes under the hood — same theme-color flow, same crisp rendering. An agent
+that picks an Inter-bold-italic run + a `chart-up` icon + a teal accent bar has
+built a pop slide out of vanilla primitives alone. That's the whole vision.
+
+See `rules/icons.md` for the 30+ icon catalog and the `create_icon` workflow.

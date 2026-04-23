@@ -49,6 +49,35 @@ class AuditReport:
     total_shapes_with_fill: int = 0
 
 
+@dataclass
+class OrphanBold:
+    slide_id: str
+    object_id: str | None
+    run_index: int
+    text_preview: str  # first 60 chars
+
+
+@dataclass
+class SizeCluster:
+    size_pt: float
+    count: int
+    role_guess: str  # theme font role, "orphan" if <5% of runs, else "unknown"
+
+
+@dataclass
+class TypographyReport:
+    theme_name: str
+    sub_theme_name: str
+    brief_applied: bool
+    total_text_runs: int = 0
+    total_text_shapes: int = 0
+    dominant_font: str | None = None
+    font_outliers: list[FontDrift] = field(default_factory=list)
+    size_clusters: list[SizeCluster] = field(default_factory=list)
+    orphan_bolds: list[OrphanBold] = field(default_factory=list)
+    color_drifts_vs_brief: list[ColorDrift] = field(default_factory=list)
+
+
 def _color_distance(a: str, b: str) -> int:
     """Absolute sum of RGB channel differences. 0 = same, 765 = max."""
     a = a.lstrip("#")
@@ -161,6 +190,177 @@ def audit_deck(
         ))
 
     return combined
+
+
+def _brief_palette_hexes(brief: dict[str, Any] | None) -> dict[str, str]:
+    """Flatten brief.palette into {role: HEX} map for drift comparison.
+
+    Returns {} when brief is None or has no palette. Accent/text/surface
+    become 1-hex roles; category_set becomes role_idx entries.
+    """
+    if not brief:
+        return {}
+    palette = (brief.get("palette") or {}) if isinstance(brief, dict) else {}
+    out: dict[str, str] = {}
+    for role in ("accent", "text", "surface"):
+        v = palette.get(role)
+        if isinstance(v, str) and v.startswith("#") and len(v) == 7:
+            out[role] = v.upper()
+    cats = palette.get("category_set") or []
+    if isinstance(cats, list):
+        for i, hex_value in enumerate(cats):
+            if isinstance(hex_value, str) and hex_value.startswith("#") and len(hex_value) == 7:
+                out[f"category_{i}"] = hex_value.upper()
+    return out
+
+
+def _nearest_brief_role(
+    hex_value: str, brief_hexes: dict[str, str],
+) -> tuple[str | None, str | None, int]:
+    """Nearest brief-palette role. Returns (role, hex, distance). Empty brief → (None, None, 9999)."""
+    if not brief_hexes:
+        return None, None, 9999
+    best_role, best_hex, best_d = None, None, 9999
+    for role, v in brief_hexes.items():
+        d = _color_distance(hex_value, v)
+        if d < best_d:
+            best_role, best_hex, best_d = role, v, d
+    return best_role, best_hex, best_d
+
+
+def _theme_font_role_for_size(size_pt: float, sub: SubTheme) -> str:
+    """Best theme font role match for a size. Returns role name or 'unknown'."""
+    best_role = "unknown"
+    best_d = 9999.0
+    for role, spec in sub.fonts.items():
+        d = abs(spec.size_pt - size_pt)
+        if d < best_d:
+            best_role, best_d = role, d
+    # tolerance: within 1pt = role match; otherwise 'unknown'
+    return best_role if best_d <= 1.0 else "unknown"
+
+
+def audit_typography(
+    slide_shape_lists: list[tuple[str, list[FlatShape]]],
+    sub: SubTheme,
+    brief: dict[str, Any] | None = None,
+    theme_name: str = "unknown",
+) -> TypographyReport:
+    """Brownfield typography audit.
+
+    Walks every text run across every slide and reports:
+      - dominant font_family + outliers (families <10% of runs)
+      - size clusters (within 0.5pt tolerance), labeled by theme font role
+      - orphan bolds (bold runs in shapes where majority is non-bold)
+      - color drift against the deck's theme brief (if provided)
+
+    Orthogonal to `audit_deck`: that one reports drift vs THEME; this one
+    reports typography structure + drift vs BRIEF. Both feed `restyle_slides`
+    with actionable targets.
+    """
+    report = TypographyReport(
+        theme_name=theme_name, sub_theme_name=sub.name,
+        brief_applied=bool(brief and brief.get("palette")),
+    )
+    brief_hexes = _brief_palette_hexes(brief)
+
+    family_totals: Counter[str] = Counter()
+    family_where: dict[str, list[str]] = {}
+    size_totals: Counter[float] = Counter()
+    color_totals: Counter[str] = Counter()
+    color_where: dict[str, list[str]] = {}
+    total_runs = 0
+    total_text_shapes = 0
+
+    for slide_id, shapes in slide_shape_lists:
+        for s in flatten(shapes):
+            if s.kind != "text" or not s.runs:
+                continue
+            total_text_shapes += 1
+            # bold distribution within this shape (for orphan detection)
+            bold_flags = [bool(r.bold) for r in s.runs]
+            shape_mostly_plain = bold_flags.count(True) < len(bold_flags) / 2
+            for i, r in enumerate(s.runs):
+                total_runs += 1
+                if r.font_family:
+                    family_totals[r.font_family] += 1
+                    family_where.setdefault(r.font_family, []).append(
+                        f"{slide_id}/{s.object_id}:text{i}"
+                    )
+                if r.size_pt:
+                    # bucket to nearest 0.5pt to collapse float noise
+                    bucketed = round(float(r.size_pt) * 2) / 2
+                    size_totals[bucketed] += 1
+                if r.bold and shape_mostly_plain and len(s.runs) >= 2:
+                    report.orphan_bolds.append(OrphanBold(
+                        slide_id=slide_id,
+                        object_id=s.object_id,
+                        run_index=i,
+                        text_preview=(r.content or "")[:60],
+                    ))
+                if r.color_hex and brief_hexes:
+                    nearest_role, nearest_hex, d = _nearest_brief_role(
+                        r.color_hex, brief_hexes,
+                    )
+                    # drift threshold: >60 RGB-sum distance from nearest brief role
+                    if d > 60:
+                        hex_up = r.color_hex.upper()
+                        color_totals[hex_up] += 1
+                        color_where.setdefault(hex_up, []).append(
+                            f"{slide_id}/{s.object_id}:text{i}"
+                        )
+
+    report.total_text_runs = total_runs
+    report.total_text_shapes = total_text_shapes
+
+    # dominant font + outliers
+    if family_totals:
+        dominant_family, dominant_count = family_totals.most_common(1)[0]
+        report.dominant_font = dominant_family
+        threshold = max(1, total_runs // 10)  # <10% of runs is outlier
+        for family, count in family_totals.most_common():
+            if family == dominant_family:
+                continue
+            if count < threshold or family != dominant_family:
+                # First-size match for representative size_pt; 0.0 if unknown
+                sample_size = 0.0
+                for _sid, shapes in slide_shape_lists:
+                    found = False
+                    for s in flatten(shapes):
+                        if s.kind != "text" or not s.runs:
+                            continue
+                        for r in s.runs:
+                            if r.font_family == family and r.size_pt:
+                                sample_size = float(r.size_pt)
+                                found = True
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
+                report.font_outliers.append(FontDrift(
+                    family=family, size_pt=sample_size, count=count,
+                    where=family_where.get(family, []),
+                ))
+
+    # size clusters (sorted by count desc). Orphan = <5% share of total runs.
+    for size_pt, count in size_totals.most_common():
+        role_guess = _theme_font_role_for_size(size_pt, sub)
+        if total_runs > 0 and (count / total_runs) < 0.05:
+            role_guess = "orphan"
+        report.size_clusters.append(SizeCluster(
+            size_pt=size_pt, count=count, role_guess=role_guess,
+        ))
+
+    # color drift vs brief (sorted by count desc)
+    for hex_value, count in color_totals.most_common():
+        role, nearest, _d = _nearest_brief_role(hex_value, brief_hexes)
+        report.color_drifts_vs_brief.append(ColorDrift(
+            hex_value=hex_value, count=count, where=color_where[hex_value],
+            nearest_role=role, nearest_hex=nearest,
+        ))
+
+    return report
 
 
 def user_theme_dir() -> Path:

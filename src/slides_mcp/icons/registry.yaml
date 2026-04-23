@@ -1,0 +1,198 @@
+# Vanilla icon primitives for slides-mcp v0.6.0+
+#
+# Shape types are Slides API native (see Shape.Type enum). `at` is relative
+# [left, top, width, height] within the icon's bounding box, 0..1.
+# Composed icons emit multiple shapes in order.
+
+version: 1
+icons:
+
+  # ----- arrows -----
+  arrow-right:
+    category: arrows
+    keywords: [next, forward, proceed, go, right]
+    shapes:
+      - {type: RIGHT_ARROW, at: [0.0, 0.25, 1.0, 0.5]}
+  arrow-left:
+    category: arrows
+    keywords: [back, previous, return, left]
+    shapes:
+      - {type: LEFT_ARROW, at: [0.0, 0.25, 1.0, 0.5]}
+  arrow-up:
+    category: arrows
+    keywords: [up, increase, growth, rise, higher]
+    shapes:
+      - {type: UP_ARROW, at: [0.25, 0.0, 0.5, 1.0]}
+  arrow-down:
+    category: arrows
+    keywords: [down, decrease, drop, fall, lower]
+    shapes:
+      - {type: DOWN_ARROW, at: [0.25, 0.0, 0.5, 1.0]}
+
+  # ----- symbols -----
+  plus:
+    category: symbols
+    keywords: [add, new, create, expand, positive]
+    shapes:
+      - {type: MATH_PLUS, at: [0.1, 0.1, 0.8, 0.8]}
+  minus:
+    category: symbols
+    keywords: [remove, subtract, reduce, negative]
+    shapes:
+      - {type: MATH_MINUS, at: [0.1, 0.4, 0.8, 0.2]}
+  multiply:
+    category: symbols
+    keywords: [x, close, cancel, remove, times]
+    shapes:
+      - {type: MATH_MULTIPLY, at: [0.1, 0.1, 0.8, 0.8]}
+  divide:
+    category: symbols
+    keywords: [divide, ratio, split]
+    shapes:
+      - {type: MATH_DIVIDE, at: [0.1, 0.3, 0.8, 0.4]}
+  equal:
+    category: symbols
+    keywords: [equal, same, match]
+    shapes:
+      - {type: MATH_EQUAL, at: [0.1, 0.35, 0.8, 0.3]}
+  not-equal:
+    category: symbols
+    keywords: [unequal, different, mismatch]
+    shapes:
+      - {type: MATH_NOT_EQUAL, at: [0.1, 0.2, 0.8, 0.6]}
+  star:
+    category: symbols
+    keywords: [favorite, featured, important, highlight, 5-point]
+    shapes:
+      - {type: STAR_5, at: [0.0, 0.0, 1.0, 1.0]}
+  heart:
+    category: symbols
+    keywords: [love, favorite, like, care]
+    shapes:
+      - {type: HEART, at: [0.0, 0.05, 1.0, 0.9]}
+  bolt:
+    category: symbols
+    keywords: [lightning, fast, energy, power, zap, strike]
+    shapes:
+      - {type: LIGHTNING_BOLT, at: [0.25, 0.0, 0.5, 1.0]}
+  ribbon:
+    category: symbols
+    keywords: [banner, award, decoration]
+    shapes:
+      - {type: RIBBON, at: [0.0, 0.2, 1.0, 0.6]}
+  no-entry:
+    category: symbols
+    keywords: [blocked, forbidden, stop, denied, restricted]
+    shapes:
+      - {type: NO_SMOKING, at: [0.05, 0.05, 0.9, 0.9]}
+
+  # ----- nature -----
+  sun:
+    category: nature
+    keywords: [sunny, day, bright, light, shine]
+    shapes:
+      - {type: SUN, at: [0.0, 0.0, 1.0, 1.0]}
+  moon:
+    category: nature
+    keywords: [night, dark, lunar, crescent]
+    shapes:
+      - {type: MOON, at: [0.15, 0.0, 0.7, 1.0]}
+  cloud:
+    category: nature
+    keywords: [weather, storage, fluffy]
+    shapes:
+      - {type: CLOUD, at: [0.0, 0.15, 1.0, 0.7]}
+
+  # ----- faces -----
+  smiley:
+    category: faces
+    keywords: [smile, happy, face, emotion]
+    shapes:
+      - {type: SMILEY_FACE, at: [0.05, 0.05, 0.9, 0.9]}
+
+  # ----- geometric -----
+  circle:
+    category: geometric
+    keywords: [dot, ellipse, round]
+    shapes:
+      - {type: ELLIPSE, at: [0.1, 0.1, 0.8, 0.8]}
+  square:
+    category: geometric
+    keywords: [box, block, rectangle]
+    shapes:
+      - {type: RECTANGLE, at: [0.1, 0.1, 0.8, 0.8]}
+  rounded-square:
+    category: geometric
+    keywords: [block, card, pill, capsule]
+    shapes:
+      - {type: ROUND_RECTANGLE, at: [0.1, 0.1, 0.8, 0.8]}
+  triangle:
+    category: geometric
+    keywords: [pyramid, warn, pointer]
+    shapes:
+      - {type: TRIANGLE, at: [0.0, 0.05, 1.0, 0.9]}
+  right-triangle:
+    category: geometric
+    keywords: [corner, right-angle, half-square]
+    shapes:
+      - {type: RIGHT_TRIANGLE, at: [0.05, 0.05, 0.9, 0.9]}
+  diamond:
+    category: geometric
+    keywords: [gem, milestone, precious, rotated-square]
+    shapes:
+      - {type: DIAMOND, at: [0.0, 0.05, 1.0, 0.9]}
+  pentagon:
+    category: geometric
+    keywords: [5-sided, home, shield]
+    shapes:
+      - {type: PENTAGON, at: [0.0, 0.05, 1.0, 0.9]}
+  hexagon:
+    category: geometric
+    keywords: [6-sided, honeycomb, cell]
+    shapes:
+      - {type: HEXAGON, at: [0.0, 0.15, 1.0, 0.7]}
+  octagon:
+    category: geometric
+    keywords: [stop, 8-sided]
+    shapes:
+      - {type: OCTAGON, at: [0.05, 0.05, 0.9, 0.9]}
+
+  # ----- business (composed) -----
+  chart-up:
+    category: business
+    keywords: [growth, trend, increase, metric, bars, ascending]
+    shapes:
+      - {type: RECTANGLE, at: [0.05, 0.70, 0.18, 0.25]}
+      - {type: RECTANGLE, at: [0.28, 0.50, 0.18, 0.45]}
+      - {type: RECTANGLE, at: [0.51, 0.30, 0.18, 0.65]}
+      - {type: RECTANGLE, at: [0.74, 0.10, 0.18, 0.85]}
+  chart-down:
+    category: business
+    keywords: [decline, drop, decrease, bars, descending]
+    shapes:
+      - {type: RECTANGLE, at: [0.05, 0.10, 0.18, 0.85]}
+      - {type: RECTANGLE, at: [0.28, 0.30, 0.18, 0.65]}
+      - {type: RECTANGLE, at: [0.51, 0.50, 0.18, 0.45]}
+      - {type: RECTANGLE, at: [0.74, 0.70, 0.18, 0.25]}
+  target:
+    category: business
+    keywords: [goal, focus, objective, aim]
+    shapes:
+      - {type: ELLIPSE, at: [0.0, 0.0, 1.0, 1.0]}
+      - {type: ELLIPSE, at: [0.30, 0.30, 0.40, 0.40], fill_hex: "#FFFFFF"}
+      - {type: ELLIPSE, at: [0.44, 0.44, 0.12, 0.12]}
+  bullseye:
+    category: business
+    keywords: [target, center, precision, focus, accuracy]
+    shapes:
+      - {type: ELLIPSE, at: [0.0, 0.0, 1.0, 1.0]}
+      - {type: ELLIPSE, at: [0.15, 0.15, 0.70, 0.70], fill_hex: "#FFFFFF"}
+      - {type: ELLIPSE, at: [0.30, 0.30, 0.40, 0.40]}
+      - {type: ELLIPSE, at: [0.44, 0.44, 0.12, 0.12], fill_hex: "#FFFFFF"}
+  stack:
+    category: business
+    keywords: [layers, tiers, levels, pyramid]
+    shapes:
+      - {type: RECTANGLE, at: [0.05, 0.65, 0.90, 0.20]}
+      - {type: RECTANGLE, at: [0.15, 0.40, 0.70, 0.20]}
+      - {type: RECTANGLE, at: [0.25, 0.15, 0.50, 0.20]}

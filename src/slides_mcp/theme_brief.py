@@ -83,6 +83,13 @@ DEFAULT_BRIEF: dict[str, Any] = {
     "numbering_style": "bold",
     "tone": "clean editorial",
     "image_prompt_style": "photography, documentary, warm light",
+    # font_family is OPTIONAL. When present, overrides theme YAML font.family
+    # for the matching role axis (heading or body). Size/weight stay from
+    # theme YAML. Back-compat: absent = current behavior.
+    "font_family": {
+        "heading": "Inter",
+        "body": "Inter",
+    },
 }
 """Illustrative default. The agent overrides per-deck from the user's intent —
 this is the *shape* a brief takes, not a brand. Bundled example.yaml style."""
@@ -157,6 +164,20 @@ def validate_brief(brief: dict[str, Any]) -> tuple[bool, list[str]]:
         val = brief.get(free_key)
         if val is not None and not isinstance(val, str):
             errors.append(f"{free_key} must be a string, got {type(val).__name__}")
+
+    ff = brief.get("font_family")
+    if ff is not None:
+        if not isinstance(ff, dict):
+            errors.append("font_family must be a dict with optional 'heading' and 'body'")
+        else:
+            for axis in ("heading", "body"):
+                v = ff.get(axis)
+                if v is not None and not isinstance(v, str):
+                    errors.append(
+                        f"font_family.{axis} must be a string, got {type(v).__name__}"
+                    )
+                if isinstance(v, str) and not v.strip():
+                    errors.append(f"font_family.{axis} must be non-empty if provided")
 
     return (not errors), errors
 
@@ -732,6 +753,7 @@ _MOOD_TEMPLATES: list[dict[str, Any]] = [
             "numbering_style": "bold",
             "tone": "clean editorial",
             "image_prompt_style": "documentary photography, warm light",
+            "font_family": {"heading": "Fraunces", "body": "Inter"},
         },
     },
     {
@@ -749,6 +771,7 @@ _MOOD_TEMPLATES: list[dict[str, Any]] = [
             "numbering_style": "outlined",
             "tone": "confident enterprise",
             "image_prompt_style": "editorial photography, dark saturated palette",
+            "font_family": {"heading": "DM Serif Display", "body": "IBM Plex Sans"},
         },
     },
     {
@@ -766,6 +789,7 @@ _MOOD_TEMPLATES: list[dict[str, Any]] = [
             "numbering_style": "dot",
             "tone": "minimalist technical",
             "image_prompt_style": "isometric illustration, clean vector",
+            "font_family": {"heading": "Space Grotesk", "body": "Inter"},
         },
     },
     {
@@ -783,6 +807,7 @@ _MOOD_TEMPLATES: list[dict[str, Any]] = [
             "numbering_style": "dot",
             "tone": "warm and human",
             "image_prompt_style": "hand-drawn illustration, earthy tones",
+            "font_family": {"heading": "Merriweather", "body": "Lora"},
         },
     },
     {
@@ -800,6 +825,7 @@ _MOOD_TEMPLATES: list[dict[str, Any]] = [
             "numbering_style": "bold",
             "tone": "bold magazine",
             "image_prompt_style": "high-contrast editorial photography",
+            "font_family": {"heading": "Archivo Black", "body": "Archivo"},
         },
     },
     {
@@ -817,13 +843,144 @@ _MOOD_TEMPLATES: list[dict[str, Any]] = [
             "numbering_style": "outlined",
             "tone": "elegant editorial",
             "image_prompt_style": "fine-art photography, natural light",
+            "font_family": {"heading": "Playfair Display", "body": "Source Sans Pro"},
         },
     },
 ]
 
 
-def propose_brief_variants(intent: str, n: int = 3) -> list[dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# Font pairings — curated Google Fonts pairs, mood-tagged.
+# Used by `list_font_pairings` MCP tool and `propose_brief_variants` to fill
+# the font_family axis on each variant. Each pairing is a single Google Fonts
+# combo (heading + body) tagged with mood keywords.
+#
+# Constraint: stay with Google Fonts catalog — free, web-available, widely
+# cached. No designer-only foundry picks.
+# ---------------------------------------------------------------------------
+
+FONT_PAIRINGS: list[dict[str, Any]] = [
+    {
+        "id": "inter_duo",
+        "heading": "Inter",
+        "body": "Inter",
+        "mood": ["neutral", "modern", "tech", "saas", "default"],
+        "rationale": "Single-face system default. Readable at every size. Safe pick when tone is undecided.",
+    },
+    {
+        "id": "fraunces_inter",
+        "heading": "Fraunces",
+        "body": "Inter",
+        "mood": ["editorial", "magazine", "narrative", "warm"],
+        "rationale": "Fraunces gives distinctive editorial headlines; Inter keeps body crisp and modern.",
+    },
+    {
+        "id": "space_grotesk_plex",
+        "heading": "Space Grotesk",
+        "body": "IBM Plex Sans",
+        "mood": ["tech", "data", "saas", "minimalist"],
+        "rationale": "Space Grotesk's geometric headline + IBM Plex's humanist body reads as a data-forward tool.",
+    },
+    {
+        "id": "dm_serif_dm_sans",
+        "heading": "DM Serif Display",
+        "body": "DM Sans",
+        "mood": ["enterprise", "confident", "buyer", "b2b"],
+        "rationale": "DM Serif's weight reads executive; DM Sans matches for consistent grid.",
+    },
+    {
+        "id": "playfair_source",
+        "heading": "Playfair Display",
+        "body": "Source Sans Pro",
+        "mood": ["elegant", "luxury", "serif", "timeless"],
+        "rationale": "Playfair's high-contrast serif leads; Source Sans provides clean utility text.",
+    },
+    {
+        "id": "merriweather_lora",
+        "heading": "Merriweather",
+        "body": "Lora",
+        "mood": ["warm", "editorial", "human", "longform"],
+        "rationale": "Two serifs — warm body pairing that signals longform, unhurried narrative.",
+    },
+    {
+        "id": "archivo_black_archivo",
+        "heading": "Archivo Black",
+        "body": "Archivo",
+        "mood": ["bold", "agency", "pitch", "creative"],
+        "rationale": "Archivo Black screams. Archivo normal keeps body readable. Same family = tight system.",
+    },
+    {
+        "id": "ibm_plex_serif_sans",
+        "heading": "IBM Plex Serif",
+        "body": "IBM Plex Sans",
+        "mood": ["technical", "enterprise", "engineered"],
+        "rationale": "Engineered family with matching proportions; serif heading signals thought leadership.",
+    },
+    {
+        "id": "manrope_manrope",
+        "heading": "Manrope",
+        "body": "Manrope",
+        "mood": ["modern", "startup", "clean", "ui"],
+        "rationale": "Geometric humanist single-face. Reads app-like, fresh. Good for product decks.",
+    },
+    {
+        "id": "libre_baskerville_libre_franklin",
+        "heading": "Libre Baskerville",
+        "body": "Libre Franklin",
+        "mood": ["heritage", "editorial", "institutional"],
+        "rationale": "Traditional serif heading with sans body. Reads like a quality long-read publication.",
+    },
+    {
+        "id": "oswald_lato",
+        "heading": "Oswald",
+        "body": "Lato",
+        "mood": ["sports", "impactful", "condensed", "training"],
+        "rationale": "Condensed display headline + calm body. Works for training decks, kickoffs.",
+    },
+    {
+        "id": "crimson_nunito",
+        "heading": "Crimson Text",
+        "body": "Nunito Sans",
+        "mood": ["academic", "research", "serif", "calm"],
+        "rationale": "Academic serif heading with friendly rounded sans. Reads like a thoughtful white paper.",
+    },
+]
+
+
+def list_font_pairings(mood: str | None = None) -> list[dict[str, Any]]:
+    """Return curated Google Fonts pairings; optionally filtered by mood keyword.
+
+    Pure function. Case-insensitive substring match on mood tags AND the mood
+    parameter also matches against any word in the pairing's mood list.
+
+    Returns a FRESH list of dicts — callers can mutate without side effect.
+
+    Shape:
+        [{id, heading, body, mood: [str, ...], rationale: str}, ...]
+    """
+    if not mood:
+        return [dict(p) for p in FONT_PAIRINGS]
+    needle = mood.strip().lower()
+    if not needle:
+        return [dict(p) for p in FONT_PAIRINGS]
+    result: list[dict[str, Any]] = []
+    for p in FONT_PAIRINGS:
+        tags = [t.lower() for t in p.get("mood", [])]
+        if any(needle in t or t in needle for t in tags):
+            result.append(dict(p))
+    return result
+
+
+def propose_brief_variants(
+    intent: str,
+    n: int = 3,
+    exclude_accents: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Propose n distinct-mood theme briefs from natural-language intent.
+
+    exclude_accents: list of hex colors to skip. Useful when the deck already
+        has a brief with a known accent and the caller wants N alternatives
+        (not N including the current one). Case-insensitive hex match.
 
     Pure function — deterministic: same (intent, n) → same returned list.
 
@@ -845,6 +1002,7 @@ def propose_brief_variants(intent: str, n: int = 3) -> list[dict[str, Any]]:
     if n <= 0:
         return []
 
+    excluded = {h.upper() for h in (exclude_accents or []) if isinstance(h, str)}
     intent_lower = (intent or "").lower()
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for i, template in enumerate(_MOOD_TEMPLATES):
@@ -861,8 +1019,337 @@ def propose_brief_variants(intent: str, n: int = 3) -> list[dict[str, Any]]:
         accent = (brief.get("palette") or {}).get("accent")
         if accent in seen_accents:
             continue
+        if accent and accent.upper() in excluded:
+            continue
         seen_accents.add(accent)
         result.append(_copy_mod.deepcopy(brief))
         if len(result) == n:
             break
     return result
+
+
+# ---------------------------------------------------------------------------
+# Coherence audit (H1) — "did the deck obey the brief?"
+# ---------------------------------------------------------------------------
+
+_NEAR_BLACK_MAX: int = 32  # per-channel max for near-black classification
+_NEAR_WHITE_MIN: int = 240  # per-channel min for near-white classification
+_COHERENCE_COLOR_DIST: int = 40  # RGB-sum distance under which a hex counts as matching a brief palette member
+
+
+def _hex_channels(hex_value: str) -> tuple[int, int, int] | None:
+    h = (hex_value or "").lstrip("#").upper()
+    if len(h) != 6:
+        return None
+    try:
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return None
+
+
+def _is_near_neutral(hex_value: str) -> bool:
+    """Return True for near-black, near-white, and mid-gray; they never count as drift."""
+    ch = _hex_channels(hex_value)
+    if not ch:
+        return False
+    r, g, b = ch
+    if all(c <= _NEAR_BLACK_MAX for c in (r, g, b)):
+        return True
+    if all(c >= _NEAR_WHITE_MIN for c in (r, g, b)):
+        return True
+    # gray within 12 channel spread
+    if max(r, g, b) - min(r, g, b) <= 12:
+        return True
+    return False
+
+
+def _rgb_sum_dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+
+def _hex_in_brief_palette(hex_value: str, brief_hexes: set[str]) -> bool:
+    """True if hex matches any brief palette member within _COHERENCE_COLOR_DIST."""
+    ch = _hex_channels(hex_value)
+    if ch is None:
+        return False
+    for bh in brief_hexes:
+        bch = _hex_channels(bh)
+        if bch is None:
+            continue
+        if _rgb_sum_dist(ch, bch) <= _COHERENCE_COLOR_DIST:
+            return True
+    return False
+
+
+_HEADING_FONT_ROLE_HINTS: tuple[str, ...] = (
+    "display", "title", "heading", "num", "pill", "big",
+)
+
+
+def _role_is_heading_from_size(size_pt: float | None) -> bool:
+    """Fallback classifier: runs with size_pt >= 24 are heading-class.
+
+    Used when we don't have a theme role annotation (raw deck walk — runs
+    don't carry the original theme role). Size is an OK proxy.
+    """
+    if size_pt is None:
+        return False
+    return float(size_pt) >= 24.0
+
+
+def audit_brief_coherence(
+    prez: dict[str, Any],
+    brief: dict[str, Any] | None = None,
+    slide_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Walk non-meta slides and compare palette/fonts/shapes to brief.
+
+    slide_ids: when non-empty, restrict the walk to slides whose `objectId`
+        appears in this list. Use this to audit ONLY a freshly-generated
+        batch (e.g. slides just emitted by create_slide) without pre-existing
+        legacy content dragging down the score. When None (default), walks
+        every non-meta slide.
+
+    Returns a structured coherence report:
+
+        {
+          brief_active: bool,
+          brief_used: dict | None,           # echoed for convenience
+          coherence_score: float 0..1,       # composite, weighted
+          sub_scores: {palette, font, shape},
+          drift_by_kind: {palette, font, shape},   # drift counts
+          slides_with_drift: [                # cap ~20
+            {slide_id, drift_fields: [str], fix_hint: str},
+            ...
+          ],
+          most_common_overrides: [           # hexes NOT in brief, by frequency
+            {hex, count, context: "fill"|"text"},
+            ...
+          ],
+          observations: {
+            slides_walked, palette_total, palette_matching,
+            font_total, font_matching, shape_total, shape_matching,
+          },
+        }
+
+    Near-neutral colors (black / white / mid-gray) are considered always-matching
+    and excluded from drift counts — they're structural (text on surface) not
+    brand-expressive.
+
+    If brief is None (no active brief), returns `brief_active: False` with
+    zero drift counts and coherence_score 0.0 — caller knows to set a brief first.
+    """
+    # --- Assemble brief guards --------------------------------------------
+    brief_active = brief is not None and isinstance(brief.get("palette"), dict)
+    if not brief_active:
+        return {
+            "brief_active": False,
+            "brief_used": None,
+            "coherence_score": 0.0,
+            "sub_scores": {"palette": 0.0, "font": 0.0, "shape": 0.0},
+            "drift_by_kind": {"palette": 0, "font": 0, "shape": 0},
+            "slides_with_drift": [],
+            "most_common_overrides": [],
+            "observations": {
+                "slides_walked": 0,
+                "palette_total": 0,
+                "palette_matching": 0,
+                "font_total": 0,
+                "font_matching": 0,
+                "shape_total": 0,
+                "shape_matching": 0,
+            },
+            "next_action_hint": (
+                "no active brief — run extract_theme_brief + set_theme_brief first, "
+                "or propose_brief_variants + render_brief_swatch_grid to start fresh"
+            ),
+        }
+
+    palette = brief["palette"]
+    brief_hexes: set[str] = set()
+    for role in ("surface", "accent", "text"):
+        v = palette.get(role)
+        if isinstance(v, str):
+            brief_hexes.add(v.upper())
+    for v in (palette.get("category_set") or []):
+        if isinstance(v, str):
+            brief_hexes.add(v.upper())
+
+    ff = brief.get("font_family") or {}
+    brief_heading_family = ff.get("heading") if isinstance(ff, dict) else None
+    brief_body_family = ff.get("body") if isinstance(ff, dict) else None
+    brief_shape_lang = (brief.get("shape_language") or "").lower()
+
+    # --- Walk slides -------------------------------------------------------
+    meta = find_meta_slide(prez)
+    meta_slide_id = meta["slide_id"] if meta else None
+
+    palette_total = 0
+    palette_matching = 0
+    font_total = 0
+    font_matching = 0
+    shape_round = 0
+    shape_rect = 0
+    slides_walked = 0
+    slide_drifts: list[dict[str, Any]] = []
+    override_counts: dict[str, list[int]] = {}
+    # override_counts[hex] = [count, fill_count, text_count]
+
+    def _bump_override(hex_value: str, kind: str) -> None:
+        bucket = override_counts.setdefault(hex_value, [0, 0, 0])
+        bucket[0] += 1
+        bucket[1 if kind == "fill" else 2] += 1
+
+    filter_set = set(slide_ids) if slide_ids else None
+    for slide in prez.get("slides", []) or []:
+        sid = slide.get("objectId")
+        if sid == meta_slide_id:
+            continue
+        if filter_set is not None and sid not in filter_set:
+            continue
+        slides_walked += 1
+        slide_drift_fields: set[str] = set()
+
+        for element in slide.get("pageElements", []) or []:
+            shape = element.get("shape") or {}
+            shape_type = shape.get("shapeType")
+            if shape_type == "ROUND_RECTANGLE":
+                shape_round += 1
+            elif shape_type == "RECTANGLE":
+                shape_rect += 1
+
+            # fill color
+            fill = (
+                shape.get("shapeProperties", {})
+                .get("shapeBackgroundFill", {})
+                .get("solidFill", {})
+                .get("color")
+            )
+            fill_hex = _rgb_from_page_color(fill)
+            if fill_hex and not _is_near_neutral(fill_hex):
+                palette_total += 1
+                if _hex_in_brief_palette(fill_hex, brief_hexes):
+                    palette_matching += 1
+                else:
+                    slide_drift_fields.add("palette.fill")
+                    _bump_override(_canonical_hex(fill_hex), "fill")
+
+            # text runs
+            text = shape.get("text") or {}
+            for te in text.get("textElements", []) or []:
+                tr = te.get("textRun")
+                if not tr:
+                    continue
+                style = tr.get("style") or {}
+                fg = style.get("foregroundColor", {}).get("opaqueColor", {})
+                text_hex = _rgb_from_page_color(fg)
+                if text_hex and not _is_near_neutral(text_hex):
+                    palette_total += 1
+                    if _hex_in_brief_palette(text_hex, brief_hexes):
+                        palette_matching += 1
+                    else:
+                        slide_drift_fields.add("palette.text")
+                        _bump_override(_canonical_hex(text_hex), "text")
+
+                family = style.get("fontFamily")
+                size_pt = (style.get("fontSize") or {}).get("magnitude")
+                if family and (brief_heading_family or brief_body_family):
+                    font_total += 1
+                    target = brief_heading_family if _role_is_heading_from_size(size_pt) else brief_body_family
+                    if not target:
+                        # axis not set in brief — skip, don't count as drift
+                        font_total -= 1
+                    elif family.strip().lower() == target.strip().lower():
+                        font_matching += 1
+                    else:
+                        slide_drift_fields.add("font_family")
+
+        if slide_drift_fields:
+            hint_parts = []
+            if "palette.fill" in slide_drift_fields or "palette.text" in slide_drift_fields:
+                hint_parts.append("call restyle_slides(slide_ids=[this], confirm_destructive=True)")
+            if "font_family" in slide_drift_fields:
+                hint_parts.append("call restyle_slides(..., normalize_fonts=True)")
+            slide_drifts.append({
+                "slide_id": sid,
+                "drift_fields": sorted(slide_drift_fields),
+                "fix_hint": " + ".join(hint_parts) if hint_parts else "",
+            })
+
+    # --- Compute shape score ----------------------------------------------
+    shape_total = shape_round + shape_rect
+    if shape_total == 0 or not brief_shape_lang:
+        shape_matching = 0
+    else:
+        if brief_shape_lang == "rounded":
+            shape_matching = shape_round
+        elif brief_shape_lang == "sharp":
+            shape_matching = shape_rect
+        else:  # mixed
+            shape_matching = shape_total
+
+    # --- Sub-scores + composite ------------------------------------------
+    def _ratio(n: int, d: int) -> float:
+        return (n / d) if d > 0 else 1.0  # empty bucket = vacuously match
+
+    palette_score = _ratio(palette_matching, palette_total)
+    font_score = _ratio(font_matching, font_total) if font_total else 1.0
+    shape_score = _ratio(shape_matching, shape_total) if shape_total else 1.0
+
+    # Weighted: palette 50%, font 30%, shape 20%
+    composite = round(
+        palette_score * 0.5 + font_score * 0.3 + shape_score * 0.2, 3
+    )
+
+    # Most common overrides (top 10)
+    override_list = [
+        {"hex": h, "count": v[0], "fill_count": v[1], "text_count": v[2]}
+        for h, v in sorted(override_counts.items(), key=lambda kv: -kv[1][0])[:10]
+    ]
+
+    # Next-action hint
+    if composite >= 0.9:
+        hint = "coherence strong — deck ready to ship"
+    elif composite >= 0.7:
+        hint = (
+            "minor drift — consider restyle_slides(slide_ids=[drift slides], "
+            "confirm_destructive=True) to tidy"
+        )
+    elif composite >= 0.4:
+        hint = (
+            "moderate drift — restyle_slides(slide_ids='all', "
+            "normalize_fonts=True, confirm_destructive=True) recommended"
+        )
+    else:
+        hint = (
+            "major drift — re-inspect brief (likely too narrow for this deck) "
+            "or commit to restyle_slides across the whole deck"
+        )
+
+    return {
+        "brief_active": True,
+        "brief_used": brief,
+        "coherence_score": composite,
+        "sub_scores": {
+            "palette": round(palette_score, 3),
+            "font": round(font_score, 3),
+            "shape": round(shape_score, 3),
+        },
+        "drift_by_kind": {
+            "palette": palette_total - palette_matching,
+            "font": font_total - font_matching,
+            "shape": shape_total - shape_matching,
+        },
+        "slides_with_drift": slide_drifts[:20],
+        "most_common_overrides": override_list,
+        "observations": {
+            "slides_walked": slides_walked,
+            "palette_total": palette_total,
+            "palette_matching": palette_matching,
+            "font_total": font_total,
+            "font_matching": font_matching,
+            "shape_total": shape_total,
+            "shape_matching": shape_matching,
+        },
+        "next_action_hint": hint,
+    }

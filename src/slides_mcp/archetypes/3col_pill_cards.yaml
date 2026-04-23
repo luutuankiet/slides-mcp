@@ -20,6 +20,12 @@ slot_schema:
         body: {type: string, required: true}
         pill_color_override: {type: string, hint: "optional hex override; if unset pulls from theme"}
         card_color_override: {type: string}
+  icon_names:
+    type: list
+    length: 3
+    optional: true
+    hint: "v0.6.0: per-column icon name from list_icons(); replaces the dot accent above each pill"
+    of: {type: string}
 
 geometry_defaults:
   title:     {left_in: 0.9, top_in: 0.6, w_in: 14.4, h_in: 0.9, font_role: display}

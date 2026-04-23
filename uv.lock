@@ -1445,7 +1445,7 @@ wheels = [
 
 [[package]]
 name = "slides-mcp"
-version = "0.5.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-api-python-client" },
@@ -1453,6 +1453,7 @@ dependencies = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "mcp", extra = ["cli"] },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -1473,6 +1474,7 @@ requires-dist = [
     { name = "google-auth-httplib2", specifier = ">=0.2" },
     { name = "google-auth-oauthlib", specifier = ">=1.2" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.2.0" },
+    { name = "pillow", specifier = ">=10.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]

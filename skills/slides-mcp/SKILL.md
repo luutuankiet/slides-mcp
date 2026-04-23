@@ -52,7 +52,11 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `delete_slide` | Delete a single slide. Intent-explicit; collapses the 3-call escape-hatch pattern. |
 | `clone_deck` | Drive copy a deck, optionally with cmd+F-style text replacements |
 | `audit_deck_colors` | Walk the whole deck, report colors / fonts not in the active theme |
+| `audit_typography` | **v0.6.0.** Typography structure audit: dominant font + outliers, size clusters, orphan bolds, color drift vs brief. Brownfield companion to `audit_deck_colors`. See `rules/brownfield-workflow.md`. |
+| `restyle_slides` | **v0.6.0.** Retroactively repaint drifted colors + fills per the deck brief. Destructive (`confirm_destructive=True`). See `rules/brownfield-workflow.md`. |
 | `promote_to_theme` | Add a drift value to the theme as a named role (writes to user config) |
+| `list_icons` | **v0.6.0.** Browse the vanilla icon catalog (30+ shape-composed icons). Filter by name/category/keyword. See `rules/icons.md`. |
+| `create_icon` | **v0.6.0.** Draw a vanilla icon on a slide by composing Slides API shape primitives. Theme-color native. See `rules/icons.md`. |
 | `get_theme_brief` | Read the deck's theme brief (hidden meta-slide) — palette + tone carried across all slides. See `rules/theme-coherence.md`. |
 | `set_theme_brief` | Create / replace the deck's theme brief. Appends a hidden `isSkipped` meta-slide. |
 | `update_theme_brief` | Forward-only deep-merge patch on the brief. Existing slides untouched. |
@@ -64,6 +68,13 @@ The bespoke tools (`patch_slide`, `create_shape`, `duplicate_slot`, `clone_deck`
 | `propose_brief_variants` | Pure: N distinct-mood theme briefs from natural-language intent. Seeds variant selection. See `rules/variant-generation.md`. |
 | `generate_variants` | Render the same content_list under N briefs side-by-side. See `rules/variant-generation.md`. |
 | `lock_variant` | Commit one variant's brief + delete losers' slides. See `rules/variant-generation.md`. |
+| `render_brief_swatch` | **v0.7.0.** PIL tone-card for one brief. No Slides API calls. Preview before `set_theme_brief`. See `rules/preview-workflow.md`. |
+| `render_brief_swatch_grid` | **v0.7.0.** PIL grid of N tone cards in one PNG. The fast-switch approval primitive. See `rules/preview-workflow.md`. |
+| `preview_archetype` | **v0.7.0.** PIL sketch of archetype+content+brief. No writes. Use to compare layouts before `create_slide`. See `rules/preview-workflow.md`. |
+| `render_deck_contact_sheet` | **v0.7.0.** Thumbnail grid PNG of N slides in one call. `variant_id` filter for variant comparison. See `rules/preview-workflow.md`. |
+| `list_font_pairings` | **v0.7.0.** Curated Google Fonts pairings, optional mood filter. Seeds `brief.font_family` axis. |
+| `audit_brief_coherence` | **v0.7.0.** Single 0..1 score + drift breakdown + per-slide fix hints. Pre-ship gate. See `rules/theme-discipline.md`. |
+| `orient_to_deck` | **v0.7.0.** Composite onboarding: brief + coherence + archetype histogram + dominant font + outline in one call. First move on any brownfield deck. See `rules/theme-discipline.md`. |
 | `exec_batch_update` | Raw batchUpdate passthrough — ALWAYS `dry_run=True` on first call. Now narrower: character styling moved to bespoke tools. |
 
 ## Workflow Guides
@@ -80,4 +91,8 @@ Read these before starting. Each rule doc is scoped to one axis of the workflow:
 - [rules/generate-from-intent.md](rules/generate-from-intent.md) — **Prompt → slides workflow:** `create_slide` primitive, archetype selection heuristic, plan→create→verify→iterate loop. Read visual-presentation.md FIRST.
 - [rules/character-styling.md](rules/character-styling.md) — **Typographic depth (v0.5.0):** `update_text_style` + `update_paragraph_style` + range language + `get_slide(include_styles=True)` discovery.
 - [rules/variant-generation.md](rules/variant-generation.md) — **Variant selection (v0.5.0):** propose → generate → render → lock workflow. For moody-but-underspecified intent.
+- [rules/brownfield-workflow.md](rules/brownfield-workflow.md) — **Brownfield repaint (v0.6.0):** `audit_deck_colors` + `audit_typography` → `restyle_slides` loop. Retroactively unify the voice of an existing deck.
+- [rules/icons.md](rules/icons.md) — **Vanilla icons (v0.6.0):** `list_icons` + `create_icon` — 30+ shape-composed icons, theme-color native. Use in pill cards, heroes, flow diagrams.
+- [rules/preview-workflow.md](rules/preview-workflow.md) — **Approve before you commit (v0.7.0):** `render_brief_swatch` + `_grid` + `preview_archetype` + `render_deck_contact_sheet`. Zero-write preview primitives.
+- [rules/theme-discipline.md](rules/theme-discipline.md) — **Theme discipline (v0.7.0):** prescriptive greenfield → brownfield → ship workflow. `orient_to_deck` + `audit_brief_coherence` + when per-call hex overrides are justified.
 - [rules/escape-hatch.md](rules/escape-hatch.md) — `exec_batch_update` safely: `dry_run`, destructive denylist, audit log. Narrower in v0.5.0 — character styling moved to bespoke tools.

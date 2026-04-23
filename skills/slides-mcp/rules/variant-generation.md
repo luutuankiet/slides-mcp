@@ -6,15 +6,33 @@ feel like?"* — or when YOU as the agent are genuinely uncertain which
 palette/shape-language fits. Rather than pick one mood and pray, render
 2-5 side by side and let the user (or a verifier) choose.
 
-The workflow is three steps:
+The workflow is **five steps** as of v0.7.0 — with a pre-commit swatch gate
+that cuts the write-and-delete cost of uncertainty:
 
 ```
 propose_brief_variants(intent, n=3)   → 3 candidate briefs
-generate_variants(deck, content_list, briefs, variant_prefix)
-                                      → render the same content N ways
-render_thumbnail(each slide_id)        → visual compare
-lock_variant(winner_id, manifest)      → commit winner + delete losers
+render_brief_swatch_grid(briefs)       → **ONE PNG** shows all 3 tones (v0.7.0)
+                                          human picks — no slides written
+                                          yet.
+
+if human decides at this step:
+  set_theme_brief(deck_url, chosen)
+  create_slide(...) * N                 → single deck, no variants needed
+
+else (still unsure between 2-3):
+  generate_variants(deck, content_list, briefs, variant_prefix)
+                                        → render the same content N ways
+  render_deck_contact_sheet(deck_url,
+                             variant_id="v0_")  → one PNG per variant (v0.7.0)
+                                                  cheaper than N render_thumbnail
+  lock_variant(winner_id, manifest)      → commit winner + delete losers
 ```
+
+**The swatch_grid step is the v0.7.0 upgrade.** Many decks don't need the
+full `generate_variants` pass — a swatch grid is enough for the human to
+pick one mood on sight. Only escalate to `generate_variants` when the human
+wants to see real slides under each brief (complex layouts, content-heavy
+slides where palette alone won't tell the whole story).
 
 No new archetype, no new palette, no new builder — this tool stacks cleanly
 on top of the existing create_slide + theme-brief machinery. One content

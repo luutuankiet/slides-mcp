@@ -257,3 +257,35 @@ render_thumbnail(deck_url, "r2")
 Do NOT batch-create all 3 slides before rendering any thumbnails. You lose
 per-slide verification, and if slide 1 is off-archetype you've compounded the
 error by 3×.
+
+---
+
+## v0.6.0 addendum — Step 5: Consider icons
+
+Between step 4 (render + verify) and step 5 (iterate), pause to ask: _would an
+icon sharpen this slide?_
+
+- Pill-card archetypes accept `icon_names: [str ×3]` — one icon above each
+  pill, auto-matched to the pill color. No extra call.
+- Hero / cover / text-left-image-right slides can take a follow-up
+  `create_icon(slide_id, at=[…], name=…)` for an accent overlay.
+- Call `list_icons("<keyword>")` to discover what fits.
+
+Icons are vanilla primitives — they render via native Slides shape types, flow
+theme colors like any other decoration, and scale perfectly. See `rules/icons.md`.
+
+### Brownfield branch — starting from an existing deck
+
+If the user hands you an existing deck rather than a blank intent, swap this
+workflow for the one in `rules/brownfield-workflow.md`. The short version:
+
+1. `get_theme_brief` → already committed? If not, `extract_theme_brief` → review
+   with the user → `set_theme_brief` to commit.
+2. `audit_deck_colors` + `audit_typography` — surface every drift before any
+   write.
+3. `restyle_slides(confirm_destructive=True)` — repaint in one call.
+4. `render_thumbnail` on the modified slides — visual one-voice check.
+5. If the overrides should persist: `update_theme_brief(changes=…)`.
+
+Restyle is the brownfield companion to `create_slide`: same brief-as-source-
+of-truth contract, applied retroactively instead of at creation.

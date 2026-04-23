@@ -8,11 +8,66 @@ for fonts + palette.
 """
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import Any
 
 from . import archetypes as arch_mod
+from . import icons as icons_mod
 from . import theme as theme_mod
+
+# Font roles considered "heading-class" for brief.font_family.heading override.
+# Matched by substring against the font_role string on each slot. Everything
+# not matched falls through to the body-class family.
+_HEADING_ROLE_SUBSTRINGS: tuple[str, ...] = (
+    "display", "title", "heading", "num", "pill", "big",
+)
+
+
+def _is_heading_role(font_role: str | None) -> bool:
+    if not font_role:
+        return False
+    low = font_role.lower()
+    return any(tok in low for tok in _HEADING_ROLE_SUBSTRINGS)
+
+
+def _apply_brief_fonts_to_sub(
+    sub: theme_mod.SubTheme,
+    brief: dict[str, Any] | None,
+) -> theme_mod.SubTheme:
+    """Overlay brief.font_family onto a SubTheme, preserving size/weight.
+
+    Returns a FRESH SubTheme with every FontSpec's `family` swapped per the
+    brief's heading/body axis. Size and weight are preserved from the theme
+    YAML — brief only controls the family name.
+
+    Role classification is substring-based (see `_is_heading_role`). A role
+    matching any heading token picks brief.font_family.heading; everything
+    else picks brief.font_family.body.
+
+    If brief is None or has no font_family, returns `sub` unchanged.
+    If a specific axis is absent (e.g. only heading set), the other axis
+    falls through to the theme YAML family — agent can migrate one axis at
+    a time.
+    """
+    if brief is None:
+        return sub
+    ff = brief.get("font_family")
+    if not isinstance(ff, dict):
+        return sub
+    heading_family = ff.get("heading") if isinstance(ff.get("heading"), str) else None
+    body_family = ff.get("body") if isinstance(ff.get("body"), str) else None
+    if not heading_family and not body_family:
+        return sub
+
+    new_fonts: dict[str, theme_mod.FontSpec] = {}
+    for role, spec in sub.fonts.items():
+        target_family = heading_family if _is_heading_role(role) else body_family
+        if target_family and target_family != spec.family:
+            new_fonts[role] = dataclasses.replace(spec, family=target_family)
+        else:
+            new_fonts[role] = spec
+    return dataclasses.replace(sub, fonts=new_fonts)
 
 _EMU_PER_INCH = 914400
 
@@ -438,9 +493,14 @@ def _build_3col_pill_cards(
     if content.get("lead") and "lead" in geom:
         reqs.extend(_build_text_slot(slide_id, geom["lead"], sub, str(content["lead"]), sx=sx, sy=sy))
 
-    # --- Columns (dot + pill + body per column) ----------------------------
+    # --- Columns (dot|icon + pill + body per column) -----------------------
     dot_meta = geom.get("column_dot") or {}
     dot_r = float(dot_meta.get("r_in", 0.0))  # 0 → skip dot
+    icon_names_raw = content.get("icon_names") or []
+    icon_names: list[str | None] = [
+        str(n) if isinstance(n, str) and n else None
+        for n in list(icon_names_raw) + [None, None, None]
+    ][:3]
 
     for i, col in enumerate(columns[:3], start=1):
         col_geom = geom.get(f"column_{i}")
@@ -452,8 +512,37 @@ def _build_3col_pill_cards(
         col_h = float(col_geom.get("h_in", 2.3))
         pill_hex = _pill_hex(i - 1, col)
 
-        # Dot accent (small circle just above the pill, matching its color)
-        if dot_r > 0:
+        # Icon (if specified) OR dot accent. Mutually exclusive — icon
+        # replaces the dot as the "above-pill" accent when present.
+        icon_name = icon_names[i - 1]
+        if icon_name:
+            try:
+                icon_spec = icons_mod.get_icon_spec(icon_name)
+            except KeyError:
+                icon_spec = None
+            if icon_spec:
+                icon_size = 0.6
+                icon_left = col_left + (col_w - icon_size) / 2
+                icon_top = max(col_top - icon_size - 0.15, 0.0)
+                for shape_spec in icon_spec.get("shapes") or []:
+                    rel = shape_spec.get("at") or [0.0, 0.0, 1.0, 1.0]
+                    rl, rt, rw, rh = (float(x) for x in rel[:4])
+                    shape_fill = shape_spec.get("fill_hex") or pill_hex
+                    shape_geom = {
+                        "left_in": icon_left + rl * icon_size,
+                        "top_in": icon_top + rt * icon_size,
+                        "w_in": max(rw * icon_size, 0.05),
+                        "h_in": max(rh * icon_size, 0.05),
+                    }
+                    reqs.extend(
+                        _build_text_slot(
+                            slide_id, shape_geom, sub, "",
+                            fill_hex=str(shape_fill),
+                            shape_type=str(shape_spec.get("type", "RECTANGLE")),
+                            sx=sx, sy=sy,
+                        )
+                    )
+        elif dot_r > 0:
             dot_geom = {
                 "left_in": col_left,
                 "top_in": max(col_top - dot_r * 2 - 0.1, 0.0),
@@ -925,4 +1014,9 @@ def build_slide_requests(
         return [], warnings
     sx = deck_width_in / _REF_WIDTH_IN
     sy = deck_height_in / _REF_HEIGHT_IN
-    return builder(slide_id, content, arch, sub, sx, sy, brief=brief), warnings
+    # Apply brief.font_family overlay to sub BEFORE dispatch — every builder
+    # then inherits brief-correct fonts without per-builder wiring. Resolution
+    # order preserved: per_slide_content > brief.palette.* > (brief-overlaid)
+    # theme YAML font family > safety default.
+    sub_effective = _apply_brief_fonts_to_sub(sub, brief)
+    return builder(slide_id, content, arch, sub_effective, sx, sy, brief=brief), warnings

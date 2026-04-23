@@ -88,6 +88,10 @@ Installed files:
   rules/generate-from-intent.md   NEW Prompt → slides workflow: plan → create → verify → iterate (v0.3.0+)
   rules/character-styling.md      NEW Typographic depth: update_text_style + range language (v0.5.0+)
   rules/variant-generation.md     NEW Variant selection: propose → generate → lock (v0.5.0+)
+  rules/brownfield-workflow.md    NEW Brownfield repaint loop: audit → restyle (v0.6.0+)
+  rules/icons.md                  NEW Vanilla icons: list_icons + create_icon (v0.6.0+)
+  rules/preview-workflow.md       NEW Approve-before-commit PIL primitives: swatch + swatch_grid + preview_archetype + contact_sheet (v0.7.0+)
+  rules/theme-discipline.md       NEW Greenfield→brownfield→ship prescriptive workflow; orient_to_deck + audit_brief_coherence (v0.7.0+)
   rules/read-deck.md                  Outline, slide, search, list_slides_by
   rules/write-deck.md                 patch_slide: text, translation, _object_ids
   rules/theme-hygiene.md              audit_deck_colors + promote_to_theme

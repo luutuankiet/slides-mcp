@@ -38,8 +38,10 @@ from . import audit as audit_mod
 from . import auth, slides_api
 from . import classify as classify_mod
 from . import create as create_mod
+from . import icons as icons_mod
 from . import normalize as normalize_mod
 from . import projection as projection_mod
+from . import swatch as swatch_mod
 from . import text_range as text_range_mod
 from . import theme as theme_mod
 from . import theme_brief as theme_brief_mod
@@ -384,6 +386,378 @@ def audit_deck_colors(
 
 
 @mcp.tool()
+def audit_typography(
+    deck_url: str,
+    theme: str = "example",
+    sub_theme: str = "primary",
+) -> dict[str, Any]:
+    """Brownfield typography audit — complement to audit_deck_colors.
+
+    Walks every text run in the deck and reports:
+      - **dominant font + outliers**: most-common font_family vs the long tail
+        of families that might be paste-in Calibri pollution or ad-hoc drift
+      - **size clusters**: every font size bucketed to 0.5pt, labeled by
+        theme font role; sizes used by <5% of runs are tagged as "orphan"
+      - **orphan bolds**: bold runs inside shapes where the majority is
+        non-bold (often accidental paste-styling)
+      - **color drift vs brief**: any run color more than 60 RGB-distance
+        away from every brief.palette role; brief is auto-fetched from the
+        deck's hidden meta-slide (skipped silently if absent)
+
+    Companion to `audit_deck_colors` — together they produce the full pre-
+    restyle picture. Feeds directly into `restyle_slides(brief_overrides=...)`
+    which picks up the drift targets.
+
+    Returns `{deck_id, theme, sub_theme, brief_applied, total_text_runs,
+    total_text_shapes, dominant_font, font_outliers, size_clusters,
+    orphan_bolds, color_drifts_vs_brief}`. Each drift list entry carries
+    `example_locations` (first 3 `slide_id/object_id:textN` breadcrumbs)
+    for targeted follow-up.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    sub = _sub_theme(theme, sub_theme)
+    prez = slides_api.get_presentation(deck_id)
+    slide_shapes: list[tuple[str, list[normalize_mod.FlatShape]]] = []
+    for slide in prez.get("slides", []):
+        slide_shapes.append((slide["objectId"], normalize_mod.normalize_page(slide)))
+
+    # best-effort brief fetch: missing brief is fine (skips color_drifts_vs_brief)
+    brief: dict[str, Any] | None = None
+    try:
+        meta = theme_brief_mod.find_meta_slide(prez)
+        if meta is not None:
+            brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+    except Exception:  # noqa: BLE001 — brief extraction is best-effort
+        brief = None
+
+    report = audit_mod.audit_typography(slide_shapes, sub, brief=brief, theme_name=theme)
+    return {
+        "deck_id": deck_id,
+        "theme": theme,
+        "sub_theme": sub_theme,
+        "brief_applied": report.brief_applied,
+        "total_text_runs": report.total_text_runs,
+        "total_text_shapes": report.total_text_shapes,
+        "dominant_font": report.dominant_font,
+        "font_outliers": [
+            {"family": d.family, "size_pt": d.size_pt, "count": d.count,
+             "example_locations": d.where[:3]}
+            for d in report.font_outliers
+        ],
+        "size_clusters": [
+            {"size_pt": c.size_pt, "count": c.count, "role_guess": c.role_guess}
+            for c in report.size_clusters
+        ],
+        "orphan_bolds": [
+            {"slide_id": o.slide_id, "object_id": o.object_id,
+             "run_index": o.run_index, "text_preview": o.text_preview}
+            for o in report.orphan_bolds[:20]  # cap to keep response small
+        ],
+        "color_drifts_vs_brief": [
+            {"hex": d.hex_value, "count": d.count,
+             "nearest_brief_role": d.nearest_role, "nearest_brief_hex": d.nearest_hex,
+             "example_locations": d.where[:3]}
+            for d in report.color_drifts_vs_brief
+        ],
+    }
+
+
+# Threshold (RGB-sum distance) above which a color is considered drift and
+# will be rewritten by restyle_slides. Same value used by audit_typography so
+# "what the audit reports" == "what restyle will rewrite".
+_RESTYLE_DRIFT_THRESHOLD: int = 60
+
+
+def _should_rewrite_run_color(run_hex: str, brief_hexes: dict[str, str]) -> tuple[bool, str | None]:
+    """Return (should_rewrite, target_hex). Skips near-black + near-white."""
+    dist_black = audit_mod._color_distance(run_hex, "#000000")
+    dist_white = audit_mod._color_distance(run_hex, "#FFFFFF")
+    if dist_black < _RESTYLE_DRIFT_THRESHOLD:
+        return False, None  # body text — leave
+    if dist_white < _RESTYLE_DRIFT_THRESHOLD:
+        return False, None  # inverted title — leave
+    role, target_hex, d = audit_mod._nearest_brief_role(run_hex, brief_hexes)
+    if not target_hex or target_hex.upper() == run_hex.upper():
+        return False, None
+    if d <= _RESTYLE_DRIFT_THRESHOLD:
+        return False, None
+    return True, target_hex
+
+
+@mcp.tool()
+def restyle_slides(
+    deck_url: str,
+    slide_ids: list[str] | str = "all",
+    brief_overrides: dict[str, Any] | None = None,
+    confirm_destructive: bool = False,
+    theme: str = "example",
+    sub_theme: str = "primary",
+    verify: str = "auto",
+    normalize_fonts: bool = False,
+) -> dict[str, Any]:
+    """Retroactively repaint slides to match the deck's theme brief.
+
+    normalize_fonts: when True, also rewrite text run fontFamily to match
+        brief.font_family.heading (for runs >= 24pt) and brief.font_family.body
+        (for runs < 24pt). Defaults False for backward-compat. Requires
+        brief.font_family on at least one axis or this flag is a no-op.
+        Brownfield font repaint parity with the palette repaint.
+
+    Walks every selected slide, every leaf shape, every text run, and emits
+    `updateShapeProperties` + `updateTextStyle` requests for every color that
+    drifts more than ~60 RGB-sum distance from the nearest brief palette role.
+    Near-black (body text) + near-white (inverted titles) are preserved — they
+    express hierarchy, not identity.
+
+    **DESTRUCTIVE.** This overwrites per-call hex that may have been set at
+    `create_slide` time. `confirm_destructive=True` is required. One audit
+    log entry (`restyle_slides`) per invocation.
+
+    slide_ids: a list of slide IDs to restyle, OR the literal "all" (default)
+        to apply to every non-meta slide. Unknown IDs are skipped with a
+        warning rather than raising.
+
+    brief_overrides: optional dict deep-merged on top of the deck's committed
+        brief before rewriting. Useful for "try this palette without committing"
+        workflows. Does NOT update the meta-slide — call `update_theme_brief`
+        separately to persist.
+
+    Returns `{deck_id, restyled_slide_ids, skipped_slide_ids, total_rewrites,
+    per_slide, applied_request_count, warnings, thumbnails}`. `per_slide` is
+    `{slide_id: {fill_rewrites, text_rewrites, thumbnail_url}}` — agent uses
+    thumbnails to visually verify one voice before committing the brief
+    amendment (if any) via update_theme_brief.
+    """
+    if not confirm_destructive:
+        raise ValueError(
+            "restyle_slides rewrites fills + text colors to match the deck brief. "
+            "This overwrites per-call hex passed at create_slide time. Re-invoke "
+            "with confirm_destructive=True to proceed."
+        )
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = _fetch_for_brief(deck_id)
+    meta = theme_brief_mod.find_meta_slide(prez)
+    brief = theme_brief_mod.parse_brief_body(meta["body_text"]) if meta else None
+    if brief is None:
+        if not brief_overrides:
+            raise ValueError(
+                "deck has no theme brief and no brief_overrides were passed. "
+                "Call set_theme_brief(deck_url, brief) first, or pass a minimal "
+                "brief_overrides dict with a palette."
+            )
+        brief = brief_overrides
+    elif brief_overrides:
+        brief = theme_brief_mod.merge_brief(brief, brief_overrides)
+
+    brief_hexes = audit_mod._brief_palette_hexes(brief)
+    if not brief_hexes:
+        raise ValueError(
+            "resolved brief has no usable palette — add palette.accent / palette.text / "
+            "palette.category_set before restyling"
+        )
+
+    # Filter meta-slide out of targets (never repaint the brief meta-slide).
+    meta_slide_id = meta["slide_id"] if meta else None
+    all_non_meta = [
+        s["objectId"] for s in prez.get("slides", [])
+        if s["objectId"] != meta_slide_id
+    ]
+    if slide_ids == "all":
+        targets = list(all_non_meta)
+    else:
+        targets = [sid for sid in slide_ids if sid in all_non_meta]
+
+    slides_by_id = {s["objectId"]: s for s in prez.get("slides", [])}
+    warnings: list[str] = []
+    if slide_ids != "all":
+        for sid in slide_ids:
+            if sid == meta_slide_id:
+                warnings.append(f"skipped meta-slide '{sid}' (reserved)")
+            elif sid not in slides_by_id:
+                warnings.append(f"unknown slide_id '{sid}' — skipped")
+
+    all_requests: list[dict[str, Any]] = []
+    per_slide: dict[str, dict[str, Any]] = {}
+    skipped: list[str] = []
+
+    for sid in targets:
+        # Per-slide full-field fetch — outline-mask fetch can miss
+        # shapeBackgroundFill on text-containing ROUND_RECTANGLEs (pill shapes),
+        # which caused a live-deck under-detect bug during v0.6.0 smoke test.
+        try:
+            slide = slides_api.get_slide(deck_id, sid)
+        except Exception:  # noqa: BLE001
+            skipped.append(sid)
+            continue
+        shapes = normalize_mod.normalize_page(slide)
+        fill_rewrites = 0
+        text_rewrites = 0
+
+        for fs in normalize_mod.flatten(shapes):
+            if not fs.object_id:
+                continue
+
+            # --- shape fill rewrite ---
+            if fs.fill_hex:
+                current = fs.fill_hex.upper()
+                role, target, d = audit_mod._nearest_brief_role(current, brief_hexes)
+                if target and target.upper() != current and d > _RESTYLE_DRIFT_THRESHOLD:
+                    all_requests.append({
+                        "updateShapeProperties": {
+                            "objectId": fs.object_id,
+                            "fields": "shapeBackgroundFill.solidFill.color",
+                            "shapeProperties": {
+                                "shapeBackgroundFill": {
+                                    "solidFill": {
+                                        "color": {"rgbColor": _hex_to_rgb_fracs(target)}
+                                    }
+                                }
+                            },
+                        }
+                    })
+                    fill_rewrites += 1
+
+            # --- text run color rewrite (shape-scoped, range=ALL) ---
+            # Strategy: find dominant chromatic color across this shape's runs;
+            # if it drifts, rewrite the entire shape's text (range ALL). This
+            # matches brief-as-identity semantics — a shape has one role,
+            # not per-run hex chaos.
+            chromatic_runs = [
+                r for r in (fs.runs or [])
+                if r.color_hex
+            ]
+            if chromatic_runs:
+                # Pick the most-used chromatic color as "shape dominant".
+                color_counts: dict[str, int] = {}
+                for r in chromatic_runs:
+                    key = (r.color_hex or "").upper()
+                    color_counts[key] = color_counts.get(key, 0) + 1
+                dom_hex = max(color_counts, key=lambda k: color_counts[k])
+                should, target = _should_rewrite_run_color(dom_hex, brief_hexes)
+                if should and target:
+                    all_requests.append({
+                        "updateTextStyle": {
+                            "objectId": fs.object_id,
+                            "textRange": {"type": "ALL"},
+                            "fields": "foregroundColor",
+                            "style": {
+                                "foregroundColor": {
+                                    "opaqueColor": {
+                                        "rgbColor": _hex_to_rgb_fracs(target)
+                                    }
+                                }
+                            },
+                        }
+                    })
+                    text_rewrites += 1
+
+        # --- font normalization (Scope D) ---
+        font_rewrites = 0
+        if normalize_fonts:
+            ff = (brief.get("font_family") or {}) if isinstance(brief, dict) else {}
+            brief_heading = ff.get("heading") if isinstance(ff, dict) else None
+            brief_body = ff.get("body") if isinstance(ff, dict) else None
+            if brief_heading or brief_body:
+                for element in slide.get("pageElements", []) or []:
+                    shape = element.get("shape") or {}
+                    text = shape.get("text") or {}
+                    obj_id = element.get("objectId")
+                    if not obj_id or not text:
+                        continue
+                    # Classify this shape as heading vs body by MAX run size.
+                    sizes: list[float] = []
+                    families_seen: set[str] = set()
+                    for te in text.get("textElements", []) or []:
+                        tr = te.get("textRun")
+                        if not tr:
+                            continue
+                        style = tr.get("style") or {}
+                        sz = (style.get("fontSize") or {}).get("magnitude")
+                        if sz is not None:
+                            try:
+                                sizes.append(float(sz))
+                            except (TypeError, ValueError):
+                                pass
+                        fam = style.get("fontFamily")
+                        if isinstance(fam, str) and fam.strip():
+                            families_seen.add(fam.strip())
+                    if not families_seen:
+                        continue
+                    max_size = max(sizes) if sizes else 14.0
+                    is_heading = max_size >= 24.0
+                    target_family = brief_heading if is_heading else brief_body
+                    if not target_family:
+                        continue
+                    # Skip if the shape's family ALREADY matches.
+                    if all(f.strip().lower() == target_family.strip().lower()
+                           for f in families_seen):
+                        continue
+                    all_requests.append({
+                        "updateTextStyle": {
+                            "objectId": obj_id,
+                            "textRange": {"type": "ALL"},
+                            "fields": "fontFamily",
+                            "style": {"fontFamily": target_family},
+                        }
+                    })
+                    font_rewrites += 1
+
+        per_slide[sid] = {
+            "fill_rewrites": fill_rewrites,
+            "text_rewrites": text_rewrites,
+            "font_rewrites": font_rewrites,
+        }
+
+    applied_count = 0
+    if all_requests:
+        response = slides_api.batch_update(deck_id, all_requests)
+        applied_count = len(response.get("replies", []) or [])
+
+    _append_audit(deck_id, all_requests, False, applied_count)
+
+    # Thumbnails on verify != "never" AND actual rewrites happened.
+    if verify != "never" and applied_count > 0:
+        for sid, summary in per_slide.items():
+            if (
+                summary["fill_rewrites"] == 0
+                and summary["text_rewrites"] == 0
+                and summary.get("font_rewrites", 0) == 0
+            ):
+                continue
+            try:
+                summary["thumbnail_url"] = slides_api.get_thumbnail(
+                    deck_id, sid, size="MEDIUM",
+                )
+            except Exception as e:  # noqa: BLE001 — thumbnail failure non-fatal
+                summary["thumbnail_error"] = str(e)
+
+    restyled = [sid for sid, s in per_slide.items()
+                if s["fill_rewrites"] or s["text_rewrites"] or s.get("font_rewrites", 0)]
+    total_rewrites = sum(
+        s["fill_rewrites"] + s["text_rewrites"] + s.get("font_rewrites", 0)
+        for s in per_slide.values()
+    )
+
+    return {
+        "deck_id": deck_id,
+        "brief_applied": brief,
+        "restyled_slide_ids": restyled,
+        "skipped_slide_ids": skipped,
+        "total_rewrites": total_rewrites,
+        "applied_request_count": applied_count,
+        "per_slide": per_slide,
+        "warnings": warnings,
+        "next_step_hint": (
+            "render_thumbnail(slide_id) on restyled slides to visually verify; "
+            "if the amended palette should persist, call update_theme_brief(changes=brief_overrides)"
+            if brief_overrides else
+            "render_thumbnail(slide_id) on restyled slides to visually verify one-voice coherence"
+        ),
+    }
+
+
+@mcp.tool()
 def promote_to_theme(
     theme: str,
     sub_theme: str,
@@ -642,6 +1016,171 @@ def create_image(
 
 
 @mcp.tool()
+def list_icons(filter_keyword: str | None = None) -> dict[str, Any]:
+    """Browse the bundled icon catalog — vanilla primitives composed from Slides
+    API native shape types.
+
+    Filter: case-insensitive substring match against icon name + keywords +
+    category. Returns sorted list grouped by category.
+
+    Returns `{icons: [{name, category, keywords}], total, categories}`.
+
+    Companion to `create_icon(name, at, fill_hex?)`. Every icon ships as
+    Slides API shape primitives (RIGHT_ARROW, STAR_5, HEART, LIGHTNING_BOLT,
+    composed rectangles for charts, etc.) — no external deps, theme-color
+    native, scales perfectly.
+    """
+    found = icons_mod.list_icons(filter_keyword)
+    categories = sorted({i["category"] for i in found})
+    return {
+        "icons": found,
+        "total": len(found),
+        "categories": categories,
+        "usage_hint": (
+            "call create_icon(deck_url, slide_id, at=[l,t,w,h], name='...') "
+            "to draw one. Fill color defaults to the deck's brief.palette.accent."
+        ),
+    }
+
+
+@mcp.tool()
+def create_icon(
+    deck_url: str,
+    slide_id: str,
+    at: list[float],
+    name: str,
+    fill_hex: str | None = None,
+    outline_hex: str | None = None,
+) -> dict[str, Any]:
+    """Draw a vanilla icon on a slide by composing Slides API shape primitives.
+
+    The icon catalog (see `list_icons()`) maps each name to 1-N native shape
+    types (RIGHT_ARROW, STAR_5, ELLIPSE, composed rectangles, etc.) at
+    relative coordinates; this tool scales them to the caller's `at` box.
+
+    at: [left_in, top_in, width_in, height_in] in inches — same shape as
+        `create_shape.at`.
+    name: icon name from the registry. Unknown names raise KeyError with
+        a partial list of known names.
+    fill_hex: optional fill color for every shape in the icon. Defaults to
+        the deck brief's `palette.accent` (if a theme brief exists), else
+        neutral gray. Pass per-call to override.
+    outline_hex: optional outline color. Omitted → no outline (filled only).
+
+    Returns `{deck_id, slide_id, icon_name, object_ids,
+    applied_request_count, thumbnail_url}`. Follow up with
+    `render_thumbnail(slide_id)` for native ImageContent to visually verify.
+
+    Decoration rule (Decision P extension): icons are VANILLA primitives —
+    use them freely in pill cards, flow diagrams, hero overlays, pill header
+    accents. They are NOT images in the raster sense; `create_image`
+    remains reserved for photos / logos / screenshots.
+    """
+    spec = icons_mod.get_icon_spec(name)
+    if not at or len(at) < 4:
+        raise ValueError("at must be [left_in, top_in, width_in, height_in]")
+    left_in, top_in, w_in, h_in = (float(x) for x in at[:4])
+    if w_in <= 0 or h_in <= 0:
+        raise ValueError("width and height must be positive")
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+
+    # Fill resolution: per-call > brief.palette.accent > safety neutral
+    resolved_fill = fill_hex
+    if resolved_fill is None:
+        try:
+            prez = _fetch_for_brief(deck_id)
+            meta = theme_brief_mod.find_meta_slide(prez)
+            if meta is not None:
+                brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+                if brief:
+                    accent = (brief.get("palette") or {}).get("accent")
+                    if isinstance(accent, str):
+                        resolved_fill = accent
+        except Exception:  # noqa: BLE001 — brief fetch is best-effort
+            pass
+    if resolved_fill is None:
+        resolved_fill = "#888888"
+
+    requests: list[dict[str, Any]] = []
+    object_ids: list[str] = []
+    for shape_spec in spec.get("shapes") or []:
+        obj_id = _new_object_id(prefix="ico_")
+        object_ids.append(obj_id)
+        rel_at = shape_spec.get("at") or [0.0, 0.0, 1.0, 1.0]
+        rl, rt, rw, rh = (float(x) for x in rel_at[:4])
+        abs_w = max(rw * w_in, 0.05)  # prevent degenerate 0-size shapes
+        abs_h = max(rh * h_in, 0.05)
+        shape_type = shape_spec.get("type") or "RECTANGLE"
+        # Per-shape fill override (for layered icons like target, bullseye).
+        shape_fill = shape_spec.get("fill_hex") or resolved_fill
+        requests.append({
+            "createShape": {
+                "objectId": obj_id,
+                "shapeType": shape_type,
+                "elementProperties": {
+                    "pageObjectId": slide_id,
+                    "size": {
+                        "width": {"magnitude": _inch_to_emu(abs_w), "unit": "EMU"},
+                        "height": {"magnitude": _inch_to_emu(abs_h), "unit": "EMU"},
+                    },
+                    "transform": {
+                        "scaleX": 1, "scaleY": 1,
+                        "translateX": _inch_to_emu(left_in + rl * w_in),
+                        "translateY": _inch_to_emu(top_in + rt * h_in),
+                        "unit": "EMU",
+                    },
+                },
+            }
+        })
+        # Fill + optional outline
+        shape_props: dict[str, Any] = {
+            "shapeBackgroundFill": {
+                "solidFill": {
+                    "color": {"rgbColor": _hex_to_rgb_fracs(shape_fill)}
+                }
+            },
+        }
+        fields = "shapeBackgroundFill.solidFill.color"
+        if outline_hex is not None:
+            shape_props["outline"] = {
+                "outlineFill": {
+                    "solidFill": {
+                        "color": {"rgbColor": _hex_to_rgb_fracs(outline_hex)}
+                    }
+                },
+                "weight": {"magnitude": 1.5, "unit": "PT"},
+            }
+            fields += ",outline.outlineFill.solidFill.color,outline.weight"
+        else:
+            shape_props["outline"] = {"propertyState": "NOT_RENDERED"}
+            fields += ",outline.propertyState"
+        requests.append({
+            "updateShapeProperties": {
+                "objectId": obj_id,
+                "fields": fields,
+                "shapeProperties": shape_props,
+            }
+        })
+
+    slides_api.batch_update(deck_id, requests)
+    thumbnail_url = slides_api.get_thumbnail(deck_id, slide_id, size="MEDIUM")
+    return {
+        "deck_id": deck_id,
+        "slide_id": slide_id,
+        "icon_name": name,
+        "object_ids": object_ids,
+        "fill_hex": resolved_fill,
+        "outline_hex": outline_hex,
+        "applied_request_count": len(requests),
+        "thumbnail_url": thumbnail_url,
+        "next_step_hint": (
+            f"render_thumbnail(slide_id={slide_id!r}) for native ImageContent"
+        ),
+    }
+
+
+@mcp.tool()
 def create_slide(
     deck_url: str,
     archetype: str,
@@ -753,6 +1292,7 @@ def create_slide(
 
     thumbnail_url = slides_api.get_thumbnail(deck_id, new_slide_id, size="MEDIUM")
 
+    brief_fields_used = _infer_brief_fields_used(content, brief) if brief_applied else []
     return {
         "deck_id": deck_id,
         "slide_id": new_slide_id,
@@ -762,6 +1302,7 @@ def create_slide(
         "thumbnail_url": thumbnail_url,
         "warnings": warnings,
         "brief_applied": brief_applied,
+        "brief_fields_used": brief_fields_used,
         "supported_archetypes": create_mod.supported_archetypes(),
         "next_step_hint": f"call render_thumbnail(slide_id={new_slide_id!r}) for native ImageContent to visually verify",
     }
@@ -891,6 +1432,67 @@ def clone_deck(
 # ------------------------------------------------------------------
 # theme_brief — in-deck meta-slide carrying cross-slide visual DNA (Decision R)
 # ------------------------------------------------------------------
+
+
+def _infer_brief_fields_used(
+    content: dict[str, Any],
+    brief: dict[str, Any] | None,
+) -> list[str]:
+    """Heuristic: return dotted brief paths consumed by this create_slide call.
+
+    A brief path counts as "used" when:
+      - the brief has it set, AND
+      - the per-slide `content` does NOT carry an equivalent override
+
+    This is observability sugar: lets the caller see WHICH brief fallbacks
+    kicked in, without instrumenting every builder. Keep this in sync with
+    create.py builder surfaces — adding a new builder surface that reads
+    from the brief implies adding a detection clause here.
+    """
+    if not brief:
+        return []
+    used: list[str] = []
+    palette = brief.get("palette") or {}
+
+    accent_override_keys = (
+        "title_accent_hex", "separator_color_hex", "accent_color_hex",
+    )
+    text_override_keys = (
+        "body_text_color_hex", "title_color_hex", "subtitle_color_hex",
+    )
+
+    if palette.get("accent") and not any(k in content for k in accent_override_keys):
+        used.append("palette.accent")
+
+    if palette.get("text") and not any(k in content for k in text_override_keys):
+        used.append("palette.text")
+
+    if palette.get("category_set"):
+        per_col_hex = any(
+            isinstance(c, dict) and c.get("pill_hex")
+            for c in (content.get("columns") or [])
+        )
+        if (
+            "pill_palette" not in content
+            and "numbers_palette" not in content
+            and not per_col_hex
+        ):
+            used.append("palette.category_set")
+
+    if palette.get("surface"):
+        # Builders reserve surface for future use (section_opener, bg fills);
+        # today it's carried-but-unused. Don't claim it as applied unless we
+        # have a surface-consuming builder.
+        pass
+
+    ff = brief.get("font_family") or {}
+    if isinstance(ff, dict):
+        if isinstance(ff.get("heading"), str) and ff["heading"].strip():
+            used.append("font_family.heading")
+        if isinstance(ff.get("body"), str) and ff["body"].strip():
+            used.append("font_family.body")
+
+    return used
 
 
 def _fetch_for_brief(deck_id: str) -> dict[str, Any]:
@@ -1409,39 +2011,6 @@ def update_text_style(
 
 
 @mcp.tool()
-def propose_brief_variants(
-    intent: str,
-    n: int = 3,
-) -> dict[str, Any]:
-    """Propose N distinct-mood theme-brief variants from a natural-language intent.
-
-    Pure function (no deck access) — returns briefs ready to pass into
-    `generate_variants` or `set_theme_brief`. Seeds the variant selection
-    workflow: agent calls this to get 2-5 moods, renders each via
-    `generate_variants`, user (or agent) picks the winner, agent calls
-    `lock_variant` to commit.
-
-    intent: free-text describing the presentation's context, audience, tone,
-      subject matter. Keyword matching is case-insensitive substring: mention
-      'enterprise' or 'b2b' to bias toward confident-enterprise moods; 'tech'
-      or 'data' toward minimalist-technical; 'warm' or 'human' toward organic
-      earth-tones; 'bold' or 'creative' toward high-contrast magazine; 'elegant'
-      or 'luxury' toward refined serif. With no matching keywords, the default
-      ordering (editorial, enterprise, tech) wins.
-
-    n: number of variants to return. Capped at the pool size (currently 6).
-      Defaults to 3 — the sweet spot for visual A/B/C selection.
-
-    Returns {variants: [brief, ...]}. Each brief is a fully-formed dict
-    suitable for set_theme_brief (palette, shape_language, numbering_style,
-    tone, image_prompt_style). No two returned briefs share a palette.accent
-    (distinctness invariant).
-    """
-    briefs = theme_brief_mod.propose_brief_variants(intent=intent, n=n)
-    return {"variants": briefs, "count": len(briefs), "intent": intent}
-
-
-@mcp.tool()
 def generate_variants(
     deck_url: str,
     content_list: list[dict[str, Any]],
@@ -1698,6 +2267,495 @@ def update_paragraph_style(
             deck_id, slide_id, size="MEDIUM"
         )
     return result
+
+
+@mcp.tool()
+def audit_brief_coherence(
+    deck_url: str,
+    slide_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """"Did the deck stick to its brief?" — single closed-loop check.
+
+    slide_ids: when passed, restrict the audit to just those slides. Use
+        this to score a freshly-generated batch without legacy drift
+        polluting the composite. Typical pattern after create_slide loop:
+
+            generated = [r["slide_id"] for r in create_responses]
+            audit_brief_coherence(deck_url, slide_ids=generated)
+
+    Walks every non-meta slide, compares observed palette/fonts/shapes against
+    the active theme brief, returns a structured coherence report with a
+    composite 0..1 score + drift breakdown + slide-level fix hints.
+
+    Companion of `audit_deck_colors` + `audit_typography` — those return raw
+    drift histograms; this tool folds them into one verdict with actionable
+    hints. Use as the last gate before a deck ships:
+
+        report = audit_brief_coherence(deck_url)
+        if report["coherence_score"] < 0.8:
+            restyle_slides(deck_url, slide_ids="all",
+                           normalize_fonts=True, confirm_destructive=True)
+
+    Returns:
+        brief_active: bool — whether a brief was found and used
+        brief_used: dict | None — the brief applied, for caller convenience
+        coherence_score: float 0..1 — weighted composite (palette 50%, font 30%, shape 20%)
+        sub_scores: {palette, font, shape} — individual 0..1 ratios
+        drift_by_kind: {palette, font, shape} — raw drift counts
+        slides_with_drift: [{slide_id, drift_fields, fix_hint}, ...] up to 20
+        most_common_overrides: [{hex, count, fill_count, text_count}, ...] up to 10
+        observations: raw counts for inspection
+        next_action_hint: prescriptive next step based on score
+
+    Near-neutral colors (black / white / mid-gray) are considered always-
+    matching — they're structural, not brand-expressive. A deck with no brief
+    returns coherence_score 0.0 and a hint to run extract_theme_brief.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+    brief: dict[str, Any] | None = None
+    try:
+        meta = theme_brief_mod.find_meta_slide(prez)
+        if meta is not None:
+            brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+    except Exception:  # noqa: BLE001 — best-effort; absent brief is normal
+        brief = None
+    report = theme_brief_mod.audit_brief_coherence(prez, brief, slide_ids=slide_ids)
+    report["deck_id"] = deck_id
+    report["scoped_slide_ids"] = slide_ids
+    return report
+
+
+@mcp.tool()
+def orient_to_deck(
+    deck_url: str,
+    outline_limit: int = 30,
+    outline_offset: int = 0,
+) -> dict[str, Any]:
+    """Composite onboarding: one call returns everything a fresh agent needs.
+
+    When you enter a deck you haven't seen (forked session, brownfield review,
+    mid-project handoff), call this FIRST. Saves the 4-5 sequential calls that
+    would otherwise be needed to understand shape, brief, drift, and archetype
+    mix.
+
+    Token efficiency:
+      - Summary fields (brief, archetype_histogram, coherence, dominant_font)
+        are CONSTANT-SIZE regardless of deck length.
+      - The `outline` list scales linearly with deck size (~20 tok/slide).
+        Capped by `outline_limit` (default 30) so a 200-slide deck stays cheap.
+        Use `outline_limit=0` for summary-only, or paginate with
+        `outline_offset=N` to walk larger decks.
+      - Coherence walker inspects ALL slides internally for accurate scores;
+        only reported slides-with-drift are capped (at 20 per audit).
+
+    Args:
+        deck_url: standard Google Slides URL
+        outline_limit: max outline entries to return. 0 = skip outline entirely
+            (~500 tok response). -1 = unlimited. Default 30 = ~600-900 tok.
+        outline_offset: starting slide index for outline pagination.
+
+    Returns:
+        deck_id: str
+        total_slides: int
+        outline: list of {slide_id, title, archetype, is_meta}
+        outline_truncated: bool — True when outline_limit cut the response
+        outline_offset, outline_limit: pagination echo for follow-up calls
+        brief: dict | None — active brief (None if absent)
+        archetype_histogram: {archetype: count} — what layouts are in use
+        dominant_font: {family, percentage} | None — most common text font
+        coherence: nested coherence report (see audit_brief_coherence)
+        next_action_hint: prescriptive string based on deck state
+
+    Pattern the agent SHOULD follow after this call:
+
+        orient = orient_to_deck(deck_url, outline_limit=30)
+        if orient["brief"] is None:
+            # propose via extract_theme_brief → render_brief_swatch → user picks
+        elif orient["coherence"]["coherence_score"] < 0.7:
+            # restyle before any new content lands
+        else:
+            # deck is coherent, proceed with create_slide / etc.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+
+    # Brief
+    brief: dict[str, Any] | None = None
+    try:
+        meta = theme_brief_mod.find_meta_slide(prez)
+        if meta is not None:
+            brief = theme_brief_mod.parse_brief_body(meta["body_text"])
+    except Exception:  # noqa: BLE001
+        brief = None
+    meta_sid = None
+    try:
+        meta2 = theme_brief_mod.find_meta_slide(prez)
+        meta_sid = meta2["slide_id"] if meta2 else None
+    except Exception:  # noqa: BLE001
+        meta_sid = None
+
+    # Outline + archetype histogram
+    outline: list[dict[str, Any]] = []
+    archetype_histogram: dict[str, int] = {}
+    font_counter: dict[str, int] = {}
+    total_fonts = 0
+    for slide in prez.get("slides", []) or []:
+        sid = slide.get("objectId") or ""
+        is_meta = sid == meta_sid
+        flat = normalize_mod.normalize_page(slide)
+        arch_name = classify_mod.classify(flat) if flat else "empty"
+        if is_meta:
+            arch_name = "__meta_slide__"
+        archetype_histogram[arch_name] = archetype_histogram.get(arch_name, 0) + 1
+        # title (best-effort, first non-empty text)
+        title_text = ""
+        for element in slide.get("pageElements", []) or []:
+            text = (element.get("shape") or {}).get("text") or {}
+            tstr = ""
+            for te in text.get("textElements", []) or []:
+                tr = te.get("textRun")
+                if tr and tr.get("content"):
+                    tstr += tr["content"]
+                    style = tr.get("style") or {}
+                    fam = style.get("fontFamily")
+                    if fam:
+                        font_counter[fam] = font_counter.get(fam, 0) + 1
+                        total_fonts += 1
+            tstr = tstr.strip()
+            if tstr and not title_text:
+                title_text = tstr[:80]
+        outline.append({
+            "slide_id": sid,
+            "title": title_text,
+            "archetype": arch_name,
+            "is_meta": is_meta,
+        })
+
+    # Dominant font
+    dominant_font: dict[str, Any] | None = None
+    if total_fonts > 0:
+        top_fam, top_count = max(font_counter.items(), key=lambda kv: kv[1])
+        dominant_font = {
+            "family": top_fam,
+            "percentage": round(top_count * 100.0 / total_fonts, 1),
+        }
+
+    # Coherence
+    coherence = theme_brief_mod.audit_brief_coherence(prez, brief)
+
+    # Next-action hint
+    if brief is None:
+        hint = (
+            "no active brief — run extract_theme_brief(deck_url) to propose one from "
+            "the existing palette, then render_brief_swatch(proposed) to review, "
+            "then set_theme_brief(deck_url, brief) to commit"
+        )
+    elif coherence["coherence_score"] < 0.7:
+        hint = (
+            f"brief active but coherence low ({coherence['coherence_score']}); "
+            f"restyle_slides(slide_ids='all', normalize_fonts=True, "
+            f"confirm_destructive=True) before adding new content"
+        )
+    elif coherence["coherence_score"] < 0.9:
+        hint = (
+            f"brief active, minor drift ({coherence['coherence_score']}); "
+            f"restyle the flagged slides or proceed — agent's call"
+        )
+    else:
+        hint = f"deck coherent ({coherence['coherence_score']}) — ready for new content"
+
+    # Apply outline pagination AFTER full walk (walk is cheap; slicing cap the
+    # response). Default outline_limit=30 keeps response ~600-900 tok on any deck.
+    total_slides = len(outline)
+    if outline_limit == 0:
+        outline_page: list[dict[str, Any]] = []
+        truncated = total_slides > 0
+    elif outline_limit < 0:
+        outline_page = outline[max(0, outline_offset):]
+        truncated = False
+    else:
+        start = max(0, outline_offset)
+        end = start + outline_limit
+        outline_page = outline[start:end]
+        truncated = end < total_slides
+
+    return {
+        "deck_id": deck_id,
+        "total_slides": total_slides,
+        "outline": outline_page,
+        "outline_truncated": truncated,
+        "outline_offset": outline_offset,
+        "outline_limit": outline_limit,
+        "brief": brief,
+        "archetype_histogram": archetype_histogram,
+        "dominant_font": dominant_font,
+        "coherence": coherence,
+        "next_action_hint": hint,
+    }
+
+
+@mcp.tool()
+def propose_brief_variants(
+    intent: str,
+    n: int = 3,
+    exclude_current_brief: bool = False,
+    deck_url: str | None = None,
+) -> dict[str, Any]:
+    """Propose N distinct-mood theme briefs from natural-language intent.
+
+    Pure function by default. If `exclude_current_brief=True` AND `deck_url`
+    is given, the deck's active brief accent is auto-excluded from the
+    candidate pool — useful when offering alternatives to a deck that
+    already has a brief committed.
+
+    Each returned brief carries the full axis: palette + shape_language +
+    numbering_style + tone + image_prompt_style + font_family. Ready to pass
+    to `set_theme_brief` as-is, or to preview via `render_brief_swatch_grid`.
+
+    Returns {variants: list[brief], count, intent, excluded: list[hex]}.
+    """
+    excluded: list[str] = []
+    if exclude_current_brief and deck_url:
+        try:
+            deck_id = slides_api.deck_id_from_url(deck_url)
+            prez = slides_api.get_presentation(deck_id)
+            meta = theme_brief_mod.find_meta_slide(prez)
+            if meta:
+                current = theme_brief_mod.parse_brief_body(meta["body_text"])
+                if current:
+                    cur_accent = (current.get("palette") or {}).get("accent")
+                    if isinstance(cur_accent, str):
+                        excluded.append(cur_accent)
+        except Exception:  # noqa: BLE001 — absent/malformed brief is OK
+            pass
+    variants = theme_brief_mod.propose_brief_variants(
+        intent, n=n, exclude_accents=excluded or None,
+    )
+    return {
+        "variants": variants,
+        "count": len(variants),
+        "intent": intent,
+        "excluded_accents": excluded,
+    }
+
+
+@mcp.tool()
+def list_font_pairings(mood: str | None = None) -> dict[str, Any]:
+    """Return curated Google Fonts pairings for theme briefs.
+
+    Each pairing is a {heading, body} combo tagged with mood keywords. Use
+    this to pick a `font_family` axis for `set_theme_brief` or to seed
+    variant generation.
+
+    mood: optional filter — case-insensitive substring match against the
+    pairing's mood tags. Examples: "tech", "editorial", "bold", "warm".
+    Omit to list all pairings.
+
+    Returns {pairings: [{id, heading, body, mood: [str, ...], rationale}, ...]}.
+
+    Pairings are Google Fonts catalog picks — free, web-available, cached
+    widely. Use `render_brief_swatch` to preview a pairing as a PNG before
+    committing via `set_theme_brief`.
+    """
+    pairings = theme_brief_mod.list_font_pairings(mood)
+    return {
+        "pairings": pairings,
+        "count": len(pairings),
+        "mood_filter": mood,
+    }
+
+
+@mcp.tool()
+def render_brief_swatch(brief: dict[str, Any]) -> Image:
+    """Render a theme brief as a tone-card PNG and return as MCP ImageContent.
+
+    The swatch is the **fast-switch approval primitive** for the "Approve before
+    you commit" workflow: a human-scannable PNG composition of every
+    visually-expressive field in a brief (palette, shape_language,
+    numbering_style, font_family if present, tone, image_prompt_style).
+    Zero Slides API calls, zero deck writes — pure PIL composition.
+
+    Use cases:
+      - After `propose_brief_variants`, render each variant's swatch to let the
+        human pick ONE before running `generate_variants` (which writes slides).
+      - After `extract_theme_brief` on a brownfield deck, render the extracted
+        brief so the human confirms before setting it.
+      - During a taste-test loop: tweak a hex in a brief dict, re-render, eyeball.
+
+    Accepts any dict shaped like the standard brief (see `set_theme_brief`).
+    Missing fields degrade gracefully — a minimal brief with just `palette`
+    renders a recognizable card with fewer annotations.
+
+    Returns native MCP ImageContent (PNG) — ready for bidi agent vision loop.
+
+    Raises ValueError if palette.surface is absent or malformed (a card must
+    have a background to render).
+    """
+    png_bytes = swatch_mod.render_swatch(brief)
+    return Image(data=png_bytes, format="png")
+
+
+@mcp.tool()
+def render_brief_swatch_grid(briefs: list[dict[str, Any]]) -> Image:
+    """Render N briefs as a composite grid PNG and return as MCP ImageContent.
+
+    THE fast-switch primitive — cuts "generate 3 variants × 6 slides then
+    eyeball" from 18 round-trips to 1. One PNG, N candidate tones, human picks.
+
+    Layout:
+      - 1 brief  -> 1×1
+      - 2 briefs -> 1×2
+      - N >= 3   -> 3 cols, rows auto-expand
+      - Each tile labeled `Variant i` + tone if present
+
+    Typical flow:
+        briefs = propose_brief_variants("board pitch for Series B", n=3)
+        render_brief_swatch_grid(briefs)  # human picks one
+        set_theme_brief(deck_url, briefs[chosen])
+        # now run generate_variants / create_slide with the locked brief
+
+    No deck writes. No Slides API calls. Returns native MCP ImageContent.
+
+    Raises ValueError if `briefs` is empty.
+    """
+    png_bytes = swatch_mod.render_swatch_grid(briefs)
+    return Image(data=png_bytes, format="png")
+
+
+@mcp.tool()
+def render_deck_contact_sheet(
+    deck_url: str,
+    slide_ids: list[str] | None = None,
+    variant_id: str | None = None,
+    title: str | None = None,
+    thumbnail_size: str = "SMALL",
+    max_slides: int = 36,
+) -> Image:
+    """Compose every slide's thumbnail into one grid PNG. Returns MCP ImageContent.
+
+    Cuts variant comparison from N round-trips to 1. Use cases:
+      - Visual audit of a whole deck in one eyeball pass
+      - Compare N variant slides (by prefix) after `generate_variants`
+      - Pre-ship snapshot of the deck's visual voice
+
+    Token + latency budget:
+      - Each thumbnail is one Slides API call (~0.5s each).
+      - Output PNG bytes scale with tile count: SMALL × 36 tiles ≈ 200-400KB;
+        MEDIUM × 36 ≈ 2-4MB.
+      - `max_slides` (default 36 = 4×9 grid) caps the response. For bigger
+        decks, either narrow via slide_ids / variant_id, or call again with
+        a different slide_ids window. Excess slides are dropped from the end
+        of the resolved target list, with a warning-like note in the tile.
+
+    Args:
+        deck_url: standard Google Slides URL
+        slide_ids: explicit list of slide IDs to include. None = all
+            non-meta slides in deck order.
+        variant_id: filter to slides whose ID starts with this prefix. When
+            used, overrides slide_ids. Example: variant_id="v0_" picks up all
+            v0_* slides from generate_variants output.
+        title: optional header rendered at top of contact sheet.
+        thumbnail_size: "SMALL" (200x112 EMU), "MEDIUM" (800x450). Default
+            SMALL keeps per-slide fetch <50KB; MEDIUM for higher-fidelity
+            audits at ~10x the cost.
+
+    Returns native MCP ImageContent (PNG). The grid is 4 cols wide; rows
+    auto-expand. Tiles are 400x225 rendered; each labeled with slide ID.
+
+    Raises ValueError if the deck has no slides matching the filter.
+    """
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+
+    # Determine meta slide so we can skip it by default
+    meta_sid = None
+    try:
+        meta = theme_brief_mod.find_meta_slide(prez)
+        meta_sid = meta["slide_id"] if meta else None
+    except Exception:  # noqa: BLE001
+        meta_sid = None
+
+    all_slides = [s.get("objectId") for s in (prez.get("slides") or []) if s.get("objectId")]
+
+    # Resolve target slide list
+    if variant_id:
+        targets = [s for s in all_slides if s.startswith(variant_id)]
+    elif slide_ids:
+        available = set(all_slides)
+        targets = [s for s in slide_ids if s in available]
+    else:
+        targets = [s for s in all_slides if s != meta_sid]
+
+    if not targets:
+        raise ValueError(
+            f"no slides to render (variant_id={variant_id!r}, slide_ids={slide_ids!r})"
+        )
+
+    # Apply max_slides cap for cost control on large decks.
+    truncated = False
+    if len(targets) > max_slides:
+        truncated = True
+        targets = targets[:max_slides]
+
+    # Fetch thumbnails
+    thumbnails: list[tuple[str, bytes]] = []
+    for sid in targets:
+        try:
+            png = slides_api.get_thumbnail_bytes(deck_id, sid, size=thumbnail_size)
+            thumbnails.append((sid, png))
+        except Exception:  # noqa: BLE001
+            # Skip unrenderable slides — keep going with others.
+            thumbnails.append((f"{sid} (error)", b""))
+            continue
+
+    sheet_title = title
+    if truncated and not sheet_title:
+        sheet_title = f"(showing first {len(thumbnails)} / {len(all_slides)} slides — pass slide_ids= to narrow)"
+    elif truncated and sheet_title:
+        sheet_title = f"{sheet_title} (truncated to {len(thumbnails)} of {len(all_slides)})"
+    composed = swatch_mod.render_contact_sheet(thumbnails, title=sheet_title)
+    return Image(data=composed, format="png")
+
+
+@mcp.tool()
+def preview_archetype(
+    archetype: str,
+    content: dict[str, Any],
+    brief: dict[str, Any] | None = None,
+) -> Image:
+    """Render an archetype+content+brief combination as a preview PNG.
+
+    **No Slides API calls, no deck writes.** Pure PIL composition. Use when
+    you want to compare N archetypes for the same content before committing
+    one via `create_slide`.
+
+    Supported archetypes:
+      - cover_with_hero: {title, subtitle?}
+      - text_left_image_right: {title, body | paragraphs}
+      - 3col_pill_cards: {title, lead?, columns: [{pill, body}x3]}
+      - 4col_numbered_flow: {title, columns: [{num, subtitle, body}x4]}
+      - text_heavy_body: {title, paragraphs}
+
+    Unknown archetypes render a fallback sketch.
+
+    content: same semantic shape you'd pass to `create_slide`, though
+        per-call hex overrides are mostly ignored (brief drives the palette).
+    brief: optional theme brief dict. If omitted, uses safe default palette.
+
+    Returns MCP ImageContent. A badge in the top-right of every preview
+    marks it as "PREVIEW · NOT WRITTEN TO DECK" so the human can't confuse
+    it with a real render.
+
+    Typical flow:
+        # User debates archetype for a metrics slide.
+        for arch in ["3col_pill_cards", "4col_numbered_flow", "text_left_image_right"]:
+            preview_archetype(arch, content, brief)
+        # Human picks one, then:
+        create_slide(deck_url, chosen_arch, content)
+    """
+    png_bytes = swatch_mod.render_archetype_preview(archetype, content, brief)
+    return Image(data=png_bytes, format="png")
 
 
 def main() -> None:
