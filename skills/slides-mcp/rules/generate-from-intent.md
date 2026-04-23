@@ -114,6 +114,24 @@ for `create_shape` / `exec_batch_update` follow-up.
 **Anti-pattern:** defaulting every content slide to `text_heavy_body`.
 Re-read visual-presentation.md §5.
 
+### Slide count — clarify before silently under-delivering
+
+If the user specifies a target slide count (e.g. *"7 slides"*) AND enumerates
+named slots that total less than N, **do not silently deliver fewer slides.**
+The gap is the user's expectation, not a miscount on your part.
+
+Two valid responses:
+
+1. **Add a bridge slide** to reach N — an agenda, section break, quote, or
+   recap. Name its role explicitly in your plan ("slide 2 = agenda between
+   problem and pillars") so the user sees your interpretation.
+2. **Clarify the mismatch** before creating: *"I see 6 named roles but you
+   asked for 7 — want an agenda between problem and pillars, or call it
+   at 6?"*
+
+Silent under-delivery breaks trust. The user counted for a reason — either
+honor the count with an explicit bridge, or surface the gap.
+
 ## Step 2 — Create
 
 ```python

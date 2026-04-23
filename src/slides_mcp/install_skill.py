@@ -81,13 +81,19 @@ Options:
   -h, --help        Show this help
 
 Installed files:
-  SKILL.md                      Entry point — tool priority + workflow index
-  rules/workflow.md             Decision tree: what to use when
-  rules/read-deck.md            Outline, slide, search, list_slides_by
-  rules/write-deck.md           patch_slide: text, translation, _object_ids
-  rules/theme-hygiene.md        audit_deck_colors + promote_to_theme
-  rules/bidi-edit.md            See-and-move: render_thumbnail + elements
-  rules/escape-hatch.md         exec_batch_update safely: dry_run, denylist
+  SKILL.md                            Entry point — tool priority + workflow index
+  rules/workflow.md                   Decision tree: what to use when
+  rules/theme-coherence.md        NEW Cross-slide visual DNA via meta-slide brief (v0.3.0+)
+  rules/visual-presentation.md    NEW Renderer-not-brand; shapes-first; structural variety (v0.3.0+)
+  rules/generate-from-intent.md   NEW Prompt → slides workflow: plan → create → verify → iterate (v0.3.0+)
+  rules/read-deck.md                  Outline, slide, search, list_slides_by
+  rules/write-deck.md                 patch_slide: text, translation, _object_ids
+  rules/theme-hygiene.md              audit_deck_colors + promote_to_theme
+  rules/bidi-edit.md                  See-and-move: render_thumbnail + elements
+  rules/escape-hatch.md               exec_batch_update safely: dry_run, denylist
+
+Re-run after each slides-mcp upgrade — rules files evolve between versions.
+Agents reading a stale install miss new workflow guidance.
 """.strip()
 
 
@@ -118,6 +124,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("  Skills installed for this project.")
         print("  Commit .claude/skills/ to share with your team.")
+    print()
+    print("  Tip: re-run `slides-mcp install [--global]` after upgrading slides-mcp.")
+    print("       Rules files evolve between versions; a stale install means agents")
+    print("       skip new workflow guidance (e.g. theme-coherence, visual-presentation).")
     print()
     return 0
 
