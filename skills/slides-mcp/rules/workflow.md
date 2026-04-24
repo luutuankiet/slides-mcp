@@ -31,7 +31,7 @@ The slides-mcp surface decomposes into four layers. Pick the layer matching your
 
 | Intent | Tool | Notes |
 |--------|------|-------|
-| "What colors / fonts are off-theme?" | `audit_deck_colors` | Drift report with nearest-role suggestions |
+| "What colors / fonts are off-theme?" | `audit(kind="colors")` | Drift report with nearest-role suggestions |
 | "This off-theme color IS the brand" | `promote_to_theme(role_name, kind, value)` | Writes to user config theme, never bundled |
 
 ## Layer 4 — Escape hatch

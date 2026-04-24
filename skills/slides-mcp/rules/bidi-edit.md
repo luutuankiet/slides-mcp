@@ -63,7 +63,7 @@ MEDIUM is fine for most visual verification. Go LARGE only when you need to read
 ## URL-only sibling
 
 ```
-render_thumbnail_url(deck_url, slide_id, size="MEDIUM")
+render_thumbnail(deck_url, slide_id, size="MEDIUM", mode="url")
 ```
 
 Returns just the short-lived contentUrl (no bytes). Use this for dashboard embeds or pipelines where you don't need the image in-context. Agents should use `render_thumbnail` (native bytes), not this URL form.

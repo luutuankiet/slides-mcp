@@ -10,12 +10,12 @@ Before entering the repaint loop below, the deck must have a committed theme
 brief. For a brand-new onboarding:
 
 ```
-scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True)
+write_theme_brief(deck_url, mode="scaffold", auto_commit_if_high_confidence=True)
 ```
 
 One-shot. Detects existing / absent / corrupted meta, extracts a proposal
 from the palette + shape topology, auto-commits when confidence is high.
-Replaces the legacy `get_theme_brief → extract_theme_brief → set_theme_brief`
+Replaces the legacy `get_theme_brief → extract_theme_brief → write_theme_brief(mode="replace")`
 3-call dance for brownfield (the dominant entry mode). Low-confidence
 proposals come back for agent/user review before committing.
 
@@ -30,9 +30,9 @@ Once the brief is committed, proceed with the loop below.
 - **`orient_to_deck(deck_url)` FIRST call** — composite snapshot (brief +
   coherence + histogram + dominant font + truncated outline). Cheaper than
   4 sequential reads.
-- **`audit_brief_coherence(deck_url)`** — single 0..1 score + drift breakdown
-  + slide-level fix hints. Use this instead of walking `audit_deck_colors` +
-  `audit_typography` manually.
+- **`audit(deck_url, kind="brief_coherence")`** — single 0..1 score + drift breakdown
+  + slide-level fix hints. Use this instead of walking `audit(kind="colors")` +
+  `audit(kind="typography")` manually.
 - **`restyle_slides(normalize_fonts=True)`** — font family repaint parity
   with the palette repaint. Now the full brief lands in one call.
 
@@ -40,11 +40,11 @@ Once the brief is committed, proceed with the loop below.
 
 | Tool | Purpose | Writes? |
 |------|---------|---------|
-| `audit_deck_colors` | Colors/fonts not in the theme. Shows DRIFT vs. THEME. | read |
-| `audit_typography` (v0.6.0) | Dominant font + outliers, size clusters, orphan bolds, color drift vs. BRIEF | read |
+| `audit(kind="colors")` | Colors/fonts not in the theme. Shows DRIFT vs. THEME. | read |
+| `audit(kind="typography")` (v0.6.0) | Dominant font + outliers, size clusters, orphan bolds, color drift vs. BRIEF | read |
 | `restyle_slides` (v0.6.0) | Retroactively repaint drifted text + fills per the brief. Destructive. | write |
 
-`audit_typography` and `restyle_slides` share the **same 60 RGB-distance
+`audit(kind="typography")` and `restyle_slides` share the **same 60 RGB-distance
 threshold** — “what the audit reports” == “what restyle will rewrite”. No
 surprises.
 
@@ -55,15 +55,15 @@ surprises.
      → one call returns brief + coherence + archetype histogram +
        dominant font + first-30 outline.
      → If brief absent:
-         extract_theme_brief(deck_url) → render_brief_swatch(proposed)
-         → (user confirms) → set_theme_brief(deck_url, brief)
+         extract_theme_brief(deck_url) → preview(kind="brief_swatch", brief=proposed)
+         → (user confirms) → write_theme_brief(deck_url, mode="replace", brief=brief)
      → If brief present but coherence < 0.7: go straight to step 3.
      → If brief present and coherence ≥ 0.9: deck is clean, likely no
        restyle needed; only go to step 3 for targeted edits.
 
-2. audit_brief_coherence(deck_url)   — single-call verdict with fix hints
-                                        Replaces the audit_deck_colors +
-                                        audit_typography combo for coherence
+2. audit(deck_url, kind="brief_coherence")   — single-call verdict with fix hints
+                                        Replaces the audit(kind="colors") +
+                                        audit(kind="typography") combo for coherence
                                         gating. Use the legacy audits for
                                         theme-level (not brief-level) drift.
      → slides_with_drift[0..20] carries per-slide fix_hint strings.
@@ -80,18 +80,18 @@ surprises.
      → returns per_slide rewrite counts (fill_rewrites, text_rewrites,
        font_rewrites) + thumbnails.
 
-4. render_deck_contact_sheet(deck_url, slide_ids=[restyled ids])
+4. preview(kind="deck_contact_sheet", deck_url=deck_url, slide_ids=[restyled ids])
      → one PNG grid confirms the one-voice result. Cheaper than calling
        render_thumbnail N times.
 
 5. If the brief_overrides palette should persist:
-     update_theme_brief(changes={…})    — amend the committed brief
+     write_theme_brief(mode="merge", delta={…})    — amend the committed brief
 
 6. If the user pushes back ("no, keep slide 5 in original colors"):
      restyle_slides(slide_ids=[…]) targeted re-run, OR
      exec_batch_update(updateTextStyle/updateShapeProperties…) surgical edits
 
-7. Pre-ship: run audit_brief_coherence once more. Score ≥ 0.9 before
+7. Pre-ship: run audit(kind="brief_coherence") once more. Score ≥ 0.9 before
    shipping.
 ```
 
@@ -118,22 +118,22 @@ pollution or to migrate a deck onto a Google Fonts pairing chosen via
 set deliberately at creation time — e.g. `pill_hex: "#DB4437"` for a “danger”
 column. The gate forces a conscious opt-in. When in doubt:
 
-1. Run `audit_typography` first — see what _would_ change.
+1. Run `audit(kind="typography")` first — see what _would_ change.
 2. Show the user. Let them decide.
 3. Pass `confirm_destructive=True` once they approve.
 
 ## Anti-patterns
 
-- **Rewriting in a loop with `update_text_style`** when `restyle_slides`
+- **Rewriting in a loop with `update_text(scope="run")`** when `restyle_slides`
   would handle every slide in one call. Restyle is the right tool for
   **brief-wide repaints**.
 - **Asking the user for brief colors** when a deck already has a committed
   brief. Call `get_theme_brief` first — the intent is already on disk.
 - **Skipping the audit** and running restyle blind. Without auditing first
   you can’t explain _what_ will change — the user will lose trust.
-- **Forgetting `update_theme_brief`** when the overrides should persist.
+- **Forgetting `write_theme_brief(mode="merge")`** when the overrides should persist.
   `restyle_slides(brief_overrides=…)` only repaints; it does NOT update
-  the committed brief. Follow up with `update_theme_brief` if the
+  the committed brief. Follow up with `write_theme_brief(mode="merge")` if the
   overrides should stick for future `create_slide` calls.
 
 ## What `restyle_slides` will NOT touch

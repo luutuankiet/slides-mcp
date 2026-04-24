@@ -54,15 +54,16 @@ gatekeeper. Pass overrides when the slide genuinely needs a different accent
 (a "danger" column in red, a dark-mode fullbleed cover, etc.). Omit them
 everywhere else and the brief keeps the deck coherent.
 
-## The 5 brief tools
+## The brief tools (v0.9+ surface)
 
 | Tool | Purpose |
 |---|---|
 | `get_theme_brief(deck_url)` | Read the active brief. Returns `{brief, slide_id, status}`. `status: "absent"` when the deck has no meta-slide yet. |
-| `set_theme_brief(deck_url, brief)` | Create (first time) or replace the brief on the deck. Appends a hidden (`isSkipped`) slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. Returns the meta-slide `slide_id`. v0.9.0+ also populates speaker notes with rebuild instructions. |
-| `update_theme_brief(deck_url, changes)` | **Forward-only** deep-merge patch. Existing slides untouched — future `create_slide` calls see the amended brief. |
-| `extract_theme_brief(deck_url)` | **Brownfield.** Audit an existing deck (Joon-style deck without a brief), return a proposed brief with evidence histograms. Does NOT commit — agent reviews with user, tweaks, then calls `set_theme_brief`. |
-| `scaffold_meta_brief(deck_url, auto_commit_if_high_confidence?)` | **v0.9.0 brownfield-first entry.** One-shot: detects existing / absent / corrupted meta, extracts a proposal, optionally auto-commits when `confidence == "high"`. Collapses the `get → extract → review → set` dance for the dominant brownfield entry mode. Prefer over the legacy 3-call path when onboarding a deck. |
+| `write_theme_brief(deck_url, mode="replace", brief=...)` | Create (first time) or replace the brief on the deck. Appends a hidden (`isSkipped`) slide titled `__SLIDES_MCP_THEME_BRIEF__ — DO NOT DELETE`. Returns the meta-slide `slide_id`. v0.9.0+ also populates speaker notes with rebuild instructions. |
+| `write_theme_brief(deck_url, mode="merge", delta=...)` | **Forward-only** deep-merge patch. Existing slides untouched — future `create_slide` calls see the amended brief. |
+| `extract_theme_brief(deck_url)` | **Brownfield.** Audit an existing deck (Joon-style deck without a brief), return a proposed brief with evidence histograms. Does NOT commit — agent reviews with user, tweaks, then calls `write_theme_brief(mode="replace", brief=...)`. |
+| `write_theme_brief(deck_url, mode="scaffold", auto_commit_if_high_confidence=?)` | **v0.9.0 brownfield-first entry.** One-shot: detects existing / absent / corrupted meta, extracts a proposal, optionally auto-commits when `confidence == "high"`. Collapses the `get → extract → review → set` dance for the dominant brownfield entry mode. Prefer over the legacy 3-call path when onboarding a deck. |
+| `write_theme_brief(deck_url, mode="import", yaml_source=..., is_path=?)` | Parse a YAML brief (string or file path) and commit it to the meta-slide. |
 
 ## Workflow — greenfield (new deck, user gives intent)
 
@@ -76,7 +77,7 @@ everywhere else and the brief keeps the deck coherent.
                          category_set: [#E8612E, #0F1A4A, #5A6B9A]},
                shape_language: "sharp", tone: "clean editorial", ...}
 
-3. set_theme_brief(deck_url, brief)
+3. write_theme_brief(deck_url, mode="replace", brief=brief)
      → returns slide_id; brief now lives in the deck
 
 4. create_slide(..., archetype=X, content={title, body, ...})
@@ -86,16 +87,17 @@ everywhere else and the brief keeps the deck coherent.
 5. Continue creating slides — no palette repetition per call
 
 6. If user pivots ("make the accent warmer"):
-     update_theme_brief(deck_url, {palette: {accent: "#D64518"}})
+     write_theme_brief(deck_url, mode="merge", delta={palette: {accent: "#D64518"}})
      → subsequent creates use new accent; existing slides unchanged
 ```
 
 ## Workflow — brownfield (existing deck inherited / imported)
 
-**v0.9.0 fast path — `scaffold_meta_brief`** (preferred for most decks):
+**v0.9.0 fast path — `write_theme_brief(mode="scaffold")`** (preferred for most decks):
 
 ```
-1. scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=False)
+1. write_theme_brief(deck_url, mode="scaffold",
+                      auto_commit_if_high_confidence=False)
      → status: "exists" | "proposed"   (auto-skips to greenfield step 4+
                                          when "exists")
 
@@ -104,7 +106,7 @@ everywhere else and the brief keeps the deck coherent.
      b. User tweaks OR accepts
      c. If accepted as-is + confidence was "high": re-run scaffold with
         auto_commit_if_high_confidence=True to commit in one call
-     d. Else: call set_theme_brief(deck_url, brief_or_tweaked) to persist
+     d. Else: call write_theme_brief(mode="replace", brief=...) to persist
 
 3. From here on: same as greenfield step 4+
 ```
@@ -112,10 +114,10 @@ everywhere else and the brief keeps the deck coherent.
 **Legacy 3-call path** (explicit per-step control; still supported):
 
 ```
-1. get_theme_brief(deck_url)             → status: "absent"
-2. extract_theme_brief(deck_url)         → proposed_brief + evidence
+1. get_theme_brief(deck_url)                                 → status: "absent"
+2. extract_theme_brief(deck_url)                             → proposed_brief + evidence
 3. (user review)
-4. set_theme_brief(deck_url, brief)      → commits; populates notes
+4. write_theme_brief(deck_url, mode="replace", brief=brief)  → commits; populates notes
 5. From here on: same as greenfield step 4+
 ```
 
@@ -133,7 +135,7 @@ by design:
   risk")
 
 If you find yourself passing the same `accent_color_hex` on every call —
-STOP. That belongs in the brief. Commit it once via `set_theme_brief`, then
+STOP. That belongs in the brief. Commit it once via `write_theme_brief(mode="replace", ...)`, then
 let the default flow.
 
 ## The `brief_applied` response flag
@@ -144,10 +146,10 @@ false when you expected the brief to drive the palette, check:
 1. Was `theme_brief=True` (the default)? You only set `False` when
    deliberately bypassing for regression testing.
 2. Did `get_theme_brief` return `status: "absent"`? No meta-slide = no
-   brief. Call `set_theme_brief` first.
+   brief. Call `write_theme_brief(mode="replace", ...)` first.
 3. Is the brief body corrupted? `get_theme_brief` returns
-   `status: "unparseable"` in that case. Use `update_theme_brief` to
-   repair (or delete the meta-slide and `set_theme_brief` fresh).
+   `status: "unparseable"` in that case. Use `write_theme_brief(mode="merge", ...)` to
+   repair (or delete the meta-slide and `write_theme_brief(mode="replace", ...)` fresh).
 
 ## Deletion safety — what if someone removes the meta-slide?
 
@@ -155,7 +157,7 @@ false when you expected the brief to drive the palette, check:
 
 - **Title marker** — the meta-slide title carries a literal `DO NOT DELETE`
   warning, rendered in 20pt bold red.
-- **Body preamble** — visible warning + `scaffold_meta_brief` rebuild command.
+- **Body preamble** — visible warning + `write_theme_brief(mode="scaffold")` rebuild command.
 - **Speaker notes** — v0.9.0+ populates the Notes pane with a longer-form
   explanation + rebuild steps + the full MCP tool list. Humans who open
   the Notes pane get full context without needing external docs.
@@ -167,7 +169,7 @@ false when you expected the brief to drive the palette, check:
 1. **Google Slides version history** restores it — fastest path if deletion
    was recent (mentioned in both body preamble and speaker notes).
 2. **Rebuild via MCP**:
-   `scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True)`
+   `write_theme_brief(deck_url, mode="scaffold", auto_commit_if_high_confidence=True)`
    proposes a brief from the deck's existing palette and commits when
    confidence is high. Low-confidence decks get a proposal-only response
    for user review before committing.
@@ -184,8 +186,7 @@ false when you expected the brief to drive the palette, check:
    agent owns the legwork, the user owns the aesthetic call.
 3. **Passing `pill_palette` on every `create_slide` call.** That's a brief,
    not a per-slide choice. Commit it once.
-4. **Using `update_theme_brief` to retroactively repaint existing slides.**
+4. **Using `write_theme_brief(mode="merge")` to retroactively repaint existing slides.**
    It doesn't — it's forward-only. Retroactive repaint needs `restyle_slides`
-   (Phase 2.5, not yet shipped). If you need to repaint now, delete the
-   affected slides and recreate with the new brief, or use
-   `exec_batch_update` / `patch_slide` per slide.
+   or `apply_brief_and_restyle` (one-call commit + repaint). If you need to repaint now, use
+   `apply_brief_and_restyle(deck_url, brief=..., confirm_destructive=True)`.

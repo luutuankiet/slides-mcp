@@ -12,7 +12,7 @@ The theme does NOT auto-snap drifts. You decide per case.
 ## Audit a deck
 
 ```
-audit_deck_colors(deck_url, theme="joon", sub_theme="default")
+audit(deck_url, kind="colors")  # theme/sub_theme default to "example"/"primary"
 ```
 
 Returns a drift report:
@@ -58,7 +58,7 @@ Writes to the first writable theme file found in the search path, typically `~/.
 3. Project-local `./themes/` (if present)
 4. Bundled `slides_mcp/themes/` (generic `example.yaml`; never overwritten)
 
-First hit wins. Use `list_themes` to see what's resolvable now.
+First hit wins. Use `list_registry(kind="themes")` to see what's resolvable now.
 
 ## Privacy boundary
 
@@ -77,7 +77,7 @@ Your real brand theme NEVER goes in the repo. The bundled `themes/example.yaml` 
 ## Typical loop
 
 ```
-1. audit_deck_colors → drift report
+1. audit(deck_url, kind="colors") → drift report
 2. For each drift:
    - Check example_locations — is this on a slot meant to be on-brand?
    - Yes + value is the real brand    → promote_to_theme

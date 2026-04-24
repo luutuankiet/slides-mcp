@@ -39,15 +39,15 @@ Three cases:
 1. **Greenfield deck** (newly cloned or empty):
    - Translate user intent into brief fields (palette.surface / accent / text,
      category_set, tone, image_prompt_style).
-   - `set_theme_brief(deck_url, brief)` → persists hidden meta-slide.
+   - `write_theme_brief(deck_url, mode="replace", brief=brief)` → persists hidden meta-slide.
 2. **Brownfield deck** (existing deck, e.g. user says "add slides to this deck"):
    - `get_theme_brief(deck_url)` → if `status: "absent"` proceed; else skip to step 0.
    - `extract_theme_brief(deck_url)` → proposal + evidence histograms.
    - Discuss with user: "based on 48 slides, proposing navy surface + orange
      accent; adjust?" — iterate until committed.
-   - `set_theme_brief(deck_url, final_brief)`.
+   - `write_theme_brief(deck_url, mode="replace", brief=final_brief)`.
 3. **Mid-session amendment** (user pivots):
-   - `update_theme_brief(deck_url, {palette: {accent: "#NEW"}})` — forward-only.
+   - `write_theme_brief(deck_url, mode="merge", delta={palette: {accent: "#NEW"}})` — forward-only.
      Existing slides unchanged; new slides pick up the amended brief.
 
 From here on, every `create_slide` auto-reads the brief. You still pass
@@ -90,7 +90,7 @@ sequence. Match each slide to an archetype that has a **content builder**:
 | Long-form paragraph (use sparingly) | `text_heavy_body` | `{title, paragraphs: [str, …]}` |
 
 Those 5 are the **supported_archetypes** (returned in every `create_slide`
-response). Other archetype names exist in `list_archetypes` but don't have
+response). Other archetype names exist in `list_registry(kind="archetypes")` but don't have
 content builders yet — they return `reqs=[]` + a warning, leaving a blank slide
 for `create_shape` / `exec_batch_update` follow-up.
 
@@ -269,7 +269,7 @@ icon sharpen this slide?_
   pill, auto-matched to the pill color. No extra call.
 - Hero / cover / text-left-image-right slides can take a follow-up
   `create_icon(slide_id, at=[…], name=…)` for an accent overlay.
-- Call `list_icons("<keyword>")` to discover what fits.
+- Call `list_registry(kind="icons", filter="<keyword>")` to discover what fits.
 
 Icons are vanilla primitives — they render via native Slides shape types, flow
 theme colors like any other decoration, and scale perfectly. See `rules/icons.md`.
@@ -280,12 +280,12 @@ If the user hands you an existing deck rather than a blank intent, swap this
 workflow for the one in `rules/brownfield-workflow.md`. The short version:
 
 1. `get_theme_brief` → already committed? If not, `extract_theme_brief` → review
-   with the user → `set_theme_brief` to commit.
-2. `audit_deck_colors` + `audit_typography` — surface every drift before any
+   with the user → `write_theme_brief(mode="replace", ...)` to commit.
+2. `audit(kind="colors")` + `audit(kind="typography")` — surface every drift before any
    write.
 3. `restyle_slides(confirm_destructive=True)` — repaint in one call.
 4. `render_thumbnail` on the modified slides — visual one-voice check.
-5. If the overrides should persist: `update_theme_brief(changes=…)`.
+5. If the overrides should persist: `write_theme_brief(mode="merge", delta=…)`.
 
 Restyle is the brownfield companion to `create_slide`: same brief-as-source-
 of-truth contract, applied retroactively instead of at creation.

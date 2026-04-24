@@ -11,18 +11,18 @@ that cuts the write-and-delete cost of uncertainty:
 
 ```
 propose_brief_variants(intent, n=3)   → 3 candidate briefs
-render_brief_swatch_grid(briefs)       → **ONE PNG** shows all 3 tones (v0.7.0)
+preview(kind="brief_swatch_grid", briefs=briefs)  → **ONE PNG** shows all 3 tones (v0.7.0)
                                           human picks — no slides written
                                           yet.
 
 if human decides at this step:
-  set_theme_brief(deck_url, chosen)
+  write_theme_brief(deck_url, mode="replace", brief=chosen)
   create_slide(...) * N                 → single deck, no variants needed
 
 else (still unsure between 2-3):
   generate_variants(deck, content_list, briefs, variant_prefix)
                                         → render the same content N ways
-  render_deck_contact_sheet(deck_url,
+  preview(kind="deck_contact_sheet", deck_url=deck_url,
                              variant_id="v0_")  → one PNG per variant (v0.7.0)
                                                   cheaper than N render_thumbnail
   lock_variant(winner_id, manifest)      → commit winner + delete losers
@@ -103,7 +103,7 @@ generate_variants(
   }
 ```
 
-**Internally:** for each brief, the tool calls `set_theme_brief(brief)` then
+**Internally:** for each brief, the tool calls `write_theme_brief(mode="replace", brief=brief)` then
 `create_slide` per item. The deck's meta-slide brief ends the loop holding
 `briefs[-1]` (pre-lock state). Every slide carries `brief_applied: True`.
 
@@ -131,7 +131,7 @@ most visually-busy archetype) if you just want the gestalt.
 
 Picks one variant as winner. Two side effects, in order:
 
-1. `set_theme_brief(deck, winner.brief)` — promotes winner's brief into the
+1. `write_theme_brief(deck, mode="replace", brief=winner.brief)` — promotes winner's brief into the
    meta-slide (overwriting the loop-terminal state).
 2. `delete_slide` on every slide_id in every LOSING variant.
 
@@ -161,10 +161,10 @@ Individual delete failures become warnings — the winner still commits.
 | Use variants | Don't — just pick one |
 |-------------|----------------------|
 | User says "I'm not sure what vibe" | User named a specific brand palette (go direct) |
-| You genuinely can't tell from intent which mood fits | Intent is explicit: "navy, sans, corporate" → just `set_theme_brief` |
+| You genuinely can't tell from intent which mood fits | Intent is explicit: "navy, sans, corporate" → just `write_theme_brief(mode="replace", ...)` |
 | 2-5 moods worth comparing | 1 obvious winner — skip the ceremony |
 | Pre-commit exploration with a taste test | Downstream iteration on an already-locked deck |
-| Round-X intern eval (measuring distinctness) | Bespoke per-slide styling (use `update_text_style`) |
+| Round-X intern eval (measuring distinctness) | Bespoke per-slide styling (use `update_text(scope="run")`) |
 
 ## Anti-patterns
 
@@ -172,6 +172,6 @@ Individual delete failures become warnings — the winner still commits.
 |--------------|-------------|-----|
 | `generate_variants` without rendering → `lock_variant` | You're guessing blind; variant selection is USELESS without the visual | Always render thumbnails between generate and lock |
 | Skipping `propose_brief_variants`; hand-rolling briefs | Agent-bias toward familiar palettes; no distinctness guarantee | Use `propose_brief_variants` to seed; tweak the returned briefs if needed |
-| Committing the first variant reflexively | Defeats the purpose of the render-and-compare step | If you always pick `v0`, use `set_theme_brief` directly and save the cycle |
+| Committing the first variant reflexively | Defeats the purpose of the render-and-compare step | If you always pick `v0`, use `write_theme_brief(mode="replace", ...)` directly and save the cycle |
 | Using `variant_prefix="v"` in a shared deck | Name collisions with previous `v0_*` runs | Pick a session-scoped prefix: `eval_Q2launch_`, `pitch_r3_`, etc. |
 | Leaving surviving variant slides after a taste test | Clutters the deck; future agents confused | Either `lock_variant` (deletes losers) OR manually `delete_slide` the survivors |

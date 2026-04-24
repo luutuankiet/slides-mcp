@@ -54,13 +54,11 @@ def _sub_theme(theme_name: str, sub_name: str) -> theme_mod.SubTheme:
     return theme_mod.load_theme(theme_name).sub(sub_name)
 
 
-@mcp.tool()
 def list_themes() -> dict[str, Any]:
     """List all theme files discoverable in the search paths."""
     return {"themes": theme_mod.available_themes()}
 
 
-@mcp.tool()
 def list_archetypes() -> dict[str, Any]:
     """List all archetype templates bundled with or overriding the server."""
     reg = archetype_reg.registry()
@@ -111,7 +109,6 @@ def get_deck_outline(
     }
 
 
-@mcp.tool()
 def list_deck_layouts(deck_url: str) -> dict[str, Any]:
     """Return a breakdown of which archetypes appear in the deck, with counts."""
     outline = get_deck_outline(deck_url)
@@ -326,8 +323,7 @@ def patch_slide(
     }
 
 
-@mcp.tool()
-def render_thumbnail(deck_url: str, slide_id: str, size: str = "MEDIUM") -> Image:
+def _render_thumbnail_bytes(deck_url: str, slide_id: str, size: str = "MEDIUM") -> Image:
     """Render a slide as a PNG image and return it as native MCP ImageContent.
 
     size: "SMALL" (200×112 at 16:9), "MEDIUM" (800×450), "LARGE" (1600×900).
@@ -340,19 +336,17 @@ def render_thumbnail(deck_url: str, slide_id: str, size: str = "MEDIUM") -> Imag
     return Image(data=png_bytes, format="png")
 
 
-@mcp.tool()
-def render_thumbnail_url(deck_url: str, slide_id: str, size: str = "MEDIUM") -> dict[str, Any]:
+def _render_thumbnail_url(deck_url: str, slide_id: str, size: str = "MEDIUM") -> dict[str, Any]:
     """Return the short-lived contentUrl for a slide thumbnail (no image bytes).
 
     Use this when a URL is sufficient (e.g. embedding in a report). For agent
-    consumption prefer `render_thumbnail`, which returns ImageContent.
+    consumption prefer the bytes variant.
     """
     deck_id = slides_api.deck_id_from_url(deck_url)
     url = slides_api.get_thumbnail(deck_id, slide_id, size=size)
     return {"deck_id": deck_id, "slide_id": slide_id, "thumbnail_url": url, "size": size}
 
 
-@mcp.tool()
 def audit_deck_colors(
     deck_url: str,
     theme: str = "example",
@@ -386,7 +380,6 @@ def audit_deck_colors(
     }
 
 
-@mcp.tool()
 def audit_typography(
     deck_url: str,
     theme: str = "example",
@@ -1016,7 +1009,6 @@ def create_image(
     }
 
 
-@mcp.tool()
 def list_icons(filter_keyword: str | None = None) -> dict[str, Any]:
     """Browse the bundled icon catalog — vanilla primitives composed from Slides
     API native shape types.
@@ -1628,7 +1620,6 @@ def get_theme_brief(deck_url: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def set_theme_brief(
     deck_url: str,
     brief: dict[str, Any],
@@ -1762,7 +1753,6 @@ def extract_theme_brief(deck_url: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def scaffold_meta_brief(
     deck_url: str,
     auto_commit_if_high_confidence: bool = False,
@@ -1871,7 +1861,6 @@ def scaffold_meta_brief(
     }
 
 
-@mcp.tool()
 def update_theme_brief(
     deck_url: str,
     changes: dict[str, Any],
@@ -2113,7 +2102,6 @@ def _resolve_text_range(
     return text_range_mod.resolve_range(text, range_spec)
 
 
-@mcp.tool()
 def update_text_style(
     deck_url: str,
     slide_id: str,
@@ -2377,7 +2365,6 @@ def lock_variant(
     }
 
 
-@mcp.tool()
 def update_paragraph_style(
     deck_url: str,
     slide_id: str,
@@ -2452,7 +2439,6 @@ def update_paragraph_style(
     return result
 
 
-@mcp.tool()
 def audit_brief_coherence(
     deck_url: str,
     slide_ids: list[str] | None = None,
@@ -2723,7 +2709,6 @@ def propose_brief_variants(
     }
 
 
-@mcp.tool()
 def list_font_pairings(mood: str | None = None) -> dict[str, Any]:
     """Return curated Google Fonts pairings for theme briefs.
 
@@ -2749,7 +2734,6 @@ def list_font_pairings(mood: str | None = None) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def render_brief_swatch(brief: dict[str, Any]) -> Image:
     """Render a theme brief as a tone-card PNG and return as MCP ImageContent.
 
@@ -2779,7 +2763,6 @@ def render_brief_swatch(brief: dict[str, Any]) -> Image:
     return Image(data=png_bytes, format="png")
 
 
-@mcp.tool()
 def render_brief_swatch_grid(briefs: list[dict[str, Any]]) -> Image:
     """Render N briefs as a composite grid PNG and return as MCP ImageContent.
 
@@ -2806,8 +2789,7 @@ def render_brief_swatch_grid(briefs: list[dict[str, Any]]) -> Image:
     return Image(data=png_bytes, format="png")
 
 
-@mcp.tool()
-def tweak_brief(
+def _tweak_brief_compute(
     deck_url: str,
     directive: str,
 ) -> dict[str, Any]:
@@ -3093,7 +3075,6 @@ _PREVIEW_DEFAULT_CONTENT: list[dict[str, Any]] = [
 ]
 
 
-@mcp.tool()
 def preview_brief_tweak(
     deck_url: str,
     candidate_brief: dict[str, Any],
@@ -3272,7 +3253,6 @@ def preview_brief_tweak(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
 def list_catalog_briefs(mood: str | None = None) -> dict[str, Any]:
     """List briefs saved in the user's personal catalog.
 
@@ -3296,7 +3276,6 @@ def list_catalog_briefs(mood: str | None = None) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def save_brief_to_catalog(
     deck_url: str,
     name: str,
@@ -3367,7 +3346,6 @@ def save_brief_to_catalog(
     }
 
 
-@mcp.tool()
 def use_catalog_brief(
     deck_url: str,
     brief_id: str,
@@ -3448,7 +3426,6 @@ def export_brief(deck_url: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def import_brief(
     deck_url: str,
     yaml_source: str,
@@ -3518,7 +3495,6 @@ def import_brief(
     }
 
 
-@mcp.tool()
 def render_deck_contact_sheet(
     deck_url: str,
     slide_ids: list[str] | None = None,
@@ -3613,7 +3589,6 @@ def render_deck_contact_sheet(
     return Image(data=composed, format="png")
 
 
-@mcp.tool()
 def preview_archetype(
     archetype: str,
     content: dict[str, Any],
@@ -3651,6 +3626,366 @@ def preview_archetype(
     """
     png_bytes = swatch_mod.render_archetype_preview(archetype, content, brief)
     return Image(data=png_bytes, format="png")
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher tools (v0.9+): collapsed MCP tool surface
+#
+# Each dispatcher is ONE @mcp.tool() whose `kind` / `mode` / `op` argument
+# fans out to a family of underlying library functions (still callable
+# directly from tests + internal helpers). Keeps the MCP tool catalog small
+# while preserving the function-level API for Python consumers.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_registry(
+    kind: str,
+    filter: str | None = None,
+    deck_url: str | None = None,
+) -> dict[str, Any]:
+    """Browse slides-mcp registries. Dispatches by `kind`:
+
+      - "themes"         → list_themes()                          (no params)
+      - "archetypes"     → list_archetypes()                      (no params)
+      - "icons"          → list_icons(filter_keyword=filter)      (optional filter)
+      - "font_pairings"  → list_font_pairings(mood=filter)        (optional filter)
+      - "catalog_briefs" → list_catalog_briefs(mood=filter)       (optional filter)
+      - "deck_layouts"   → list_deck_layouts(deck_url)            (REQUIRES deck_url)
+
+    For structural grep across one deck's slides (archetype + contains_text
+    filters) use `list_slides_by` — its multi-filter shape doesn't fit this
+    dispatcher.
+
+    Raises ValueError when required params are missing or the kind is unknown.
+    """
+    if kind == "themes":
+        return list_themes()
+    if kind == "archetypes":
+        return list_archetypes()
+    if kind == "icons":
+        return list_icons(filter_keyword=filter)
+    if kind == "font_pairings":
+        return list_font_pairings(mood=filter)
+    if kind == "catalog_briefs":
+        return list_catalog_briefs(mood=filter)
+    if kind == "deck_layouts":
+        if not deck_url:
+            raise ValueError("list_registry(kind='deck_layouts') requires deck_url")
+        return list_deck_layouts(deck_url)
+    raise ValueError(
+        f"Unknown list kind: {kind!r}. "
+        "Expected one of: themes, archetypes, icons, font_pairings, "
+        "catalog_briefs, deck_layouts"
+    )
+
+
+@mcp.tool()
+def write_theme_brief(
+    deck_url: str,
+    mode: str,
+    brief: dict[str, Any] | None = None,
+    delta: dict[str, Any] | None = None,
+    yaml_source: str | None = None,
+    is_path: bool = False,
+    auto_commit_if_high_confidence: bool = False,
+) -> dict[str, Any]:
+    """Write or amend the deck's theme-brief meta-slide. Dispatches by `mode`:
+
+      - "replace"  → set_theme_brief(deck_url, brief)                    REQUIRES brief
+      - "merge"    → update_theme_brief(deck_url, changes=delta)          REQUIRES delta
+      - "scaffold" → scaffold_meta_brief(deck_url, auto_commit_if_high_confidence)
+                   (brownfield one-shot: detects/proposes/optionally commits)
+      - "import"   → import_brief(deck_url, yaml_source, is_path)         REQUIRES yaml_source
+
+    For a destructive one-call "commit + repaint every existing slide"
+    ceremony use `apply_brief_and_restyle` — it's kept separate because the
+    surface semantics are different (confirm_destructive gate, restyle return).
+
+    Raises ValueError when required per-mode params are missing or the mode
+    is unknown.
+    """
+    if mode == "replace":
+        if brief is None:
+            raise ValueError("write_theme_brief(mode='replace') requires brief")
+        return set_theme_brief(deck_url, brief)
+    if mode == "merge":
+        if delta is None:
+            raise ValueError("write_theme_brief(mode='merge') requires delta")
+        return update_theme_brief(deck_url, changes=delta)
+    if mode == "scaffold":
+        return scaffold_meta_brief(
+            deck_url,
+            auto_commit_if_high_confidence=auto_commit_if_high_confidence,
+        )
+    if mode == "import":
+        if yaml_source is None:
+            raise ValueError("write_theme_brief(mode='import') requires yaml_source")
+        return import_brief(deck_url, yaml_source=yaml_source, is_path=is_path)
+    raise ValueError(
+        f"Unknown write mode: {mode!r}. "
+        "Expected one of: replace, merge, scaffold, import"
+    )
+
+
+@mcp.tool()
+def audit(
+    deck_url: str,
+    kind: str,
+    slide_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Deck-level audits. Dispatches by `kind`:
+
+      - "colors"          → audit_deck_colors(deck_url)
+      - "typography"      → audit_typography(deck_url)
+      - "brief_coherence" → audit_brief_coherence(deck_url, slide_ids=slide_ids)
+
+    `slide_ids` is only meaningful for brief_coherence (to score a freshly-
+    generated batch without legacy drift polluting the composite).
+
+    Raises ValueError for unknown kind.
+    """
+    if kind == "colors":
+        return audit_deck_colors(deck_url)
+    if kind == "typography":
+        return audit_typography(deck_url)
+    if kind == "brief_coherence":
+        return audit_brief_coherence(deck_url, slide_ids=slide_ids)
+    raise ValueError(
+        f"Unknown audit kind: {kind!r}. "
+        "Expected one of: colors, typography, brief_coherence"
+    )
+
+
+@mcp.tool()
+def update_text(
+    deck_url: str,
+    slide_id: str,
+    object_id: str,
+    scope: str,
+    style: dict[str, Any],
+    range: dict[str, Any] | str | None = None,
+    verify: str = "auto",
+) -> dict[str, Any]:
+    """Apply text-level styling to a range inside a shape. Dispatches by `scope`:
+
+      - "run"       → update_text_style      (bold/italic/color/size/font/...)
+      - "paragraph" → update_paragraph_style (alignment/indent/line spacing/...)
+
+    Shared range language: None or "all", {"paragraph": N}, {"chars": [s, e]},
+    or {"match": "unique_substring"}.
+
+    Raises ValueError for unknown scope.
+    """
+    if scope == "run":
+        return update_text_style(
+            deck_url, slide_id, object_id, style, range=range, verify=verify,
+        )
+    if scope == "paragraph":
+        return update_paragraph_style(
+            deck_url, slide_id, object_id, style, range=range, verify=verify,
+        )
+    raise ValueError(
+        f"Unknown text scope: {scope!r}. Expected one of: run, paragraph"
+    )
+
+
+@mcp.tool()
+def preview(
+    kind: str,
+    brief: dict[str, Any] | None = None,
+    briefs: list[dict[str, Any]] | None = None,
+    deck_url: str | None = None,
+    slide_ids: list[str] | None = None,
+    variant_id: str | None = None,
+    archetype: str | None = None,
+    content: dict[str, Any] | None = None,
+    title: str | None = None,
+    thumbnail_size: str = "SMALL",
+    max_slides: int = 36,
+) -> Image:
+    """Zero-write preview primitives. All return MCP ImageContent (PNG).
+    Dispatches by `kind`:
+
+      - "brief_swatch"       → render_brief_swatch(brief)           REQUIRES brief
+      - "brief_swatch_grid"  → render_brief_swatch_grid(briefs)     REQUIRES briefs
+      - "deck_contact_sheet" → render_deck_contact_sheet(deck_url,  REQUIRES deck_url
+                                   slide_ids, variant_id, title,
+                                   thumbnail_size, max_slides)
+      - "archetype"          → preview_archetype(archetype, content, brief)
+                                   REQUIRES archetype + content
+
+    For Slides-API-backed thumbnails (real rendered slide) use `render_thumbnail`;
+    for WRITING sample slides into the deck under a candidate brief (human-eye
+    approval gate) use `tweak_brief(preview='slides', ...)`.
+
+    Raises ValueError when per-kind required params are missing or the kind
+    is unknown.
+    """
+    if kind == "brief_swatch":
+        if brief is None:
+            raise ValueError("preview(kind='brief_swatch') requires brief")
+        return render_brief_swatch(brief)
+    if kind == "brief_swatch_grid":
+        if not briefs:
+            raise ValueError("preview(kind='brief_swatch_grid') requires briefs")
+        return render_brief_swatch_grid(briefs)
+    if kind == "deck_contact_sheet":
+        if not deck_url:
+            raise ValueError("preview(kind='deck_contact_sheet') requires deck_url")
+        return render_deck_contact_sheet(
+            deck_url,
+            slide_ids=slide_ids,
+            variant_id=variant_id,
+            title=title,
+            thumbnail_size=thumbnail_size,
+            max_slides=max_slides,
+        )
+    if kind == "archetype":
+        if not archetype or content is None:
+            raise ValueError(
+                "preview(kind='archetype') requires archetype + content"
+            )
+        return preview_archetype(archetype, content, brief)
+    raise ValueError(
+        f"Unknown preview kind: {kind!r}. "
+        "Expected one of: brief_swatch, brief_swatch_grid, "
+        "deck_contact_sheet, archetype"
+    )
+
+
+@mcp.tool()
+def render_thumbnail(
+    deck_url: str,
+    slide_id: str,
+    size: str = "MEDIUM",
+    mode: str = "bytes",
+) -> Any:
+    """Render a slide as a thumbnail. Dispatches by `mode`:
+
+      - "bytes" (default) → MCP ImageContent (PNG bytes, no URL expiry)
+      - "url"             → {deck_id, slide_id, thumbnail_url, size}
+                            short-lived contentUrl (no image bytes)
+
+    Prefer bytes for the bidi agent vision loop; url when a URL is enough
+    (embedding in a report, non-agent caller).
+
+    Raises ValueError for unknown mode.
+    """
+    if mode == "bytes":
+        return _render_thumbnail_bytes(deck_url, slide_id, size=size)
+    if mode == "url":
+        return _render_thumbnail_url(deck_url, slide_id, size=size)
+    raise ValueError(
+        f"Unknown render_thumbnail mode: {mode!r}. Expected one of: bytes, url"
+    )
+
+
+@mcp.tool()
+def tweak_brief(
+    deck_url: str,
+    directive: str,
+    preview: str = "none",
+    candidate_brief: dict[str, Any] | None = None,
+    compare_to_current: bool = True,
+    sample_content: list[dict[str, Any]] | None = None,
+    variant_prefix: str = "tweak_preview",
+) -> dict[str, Any]:
+    """Natural-language directive → brief-delta + validated candidate. Dispatches
+    by `preview`:
+
+      - "none" (default) → compute-only. Returns {delta, candidate_brief,
+                            matched_axes, unresolved_terms, confidence,
+                            rationale, ...}. No deck writes.
+      - "slides"         → preview_brief_tweak: writes 2-4 sample slides into
+                            the deck under `candidate_brief` (defaulting to
+                            the computed candidate when omitted) so the HUMAN
+                            opens Google Slides and picks. Meta is restored
+                            at the end.
+
+    Params consumed when preview='slides': `candidate_brief` (falls back to
+    computed candidate when omitted), `compare_to_current`, `sample_content`,
+    `variant_prefix`. All are ignored when preview='none'.
+
+    For a one-call commit + repaint once the human approves, see
+    `apply_brief_and_restyle`.
+
+    Raises ValueError for unknown preview mode.
+    """
+    if preview == "none":
+        return _tweak_brief_compute(deck_url, directive)
+    if preview == "slides":
+        # Compute first so caller gets back both delta + preview results.
+        computed = _tweak_brief_compute(deck_url, directive)
+        effective_candidate = (
+            candidate_brief
+            if candidate_brief is not None
+            else computed["candidate_brief"]
+        )
+        preview_result = preview_brief_tweak(
+            deck_url,
+            candidate_brief=effective_candidate,
+            sample_content=sample_content,
+            compare_to_current=compare_to_current,
+            variant_prefix=variant_prefix,
+        )
+        return {
+            "tweak": computed,
+            "preview": preview_result,
+        }
+    raise ValueError(
+        f"Unknown tweak_brief preview mode: {preview!r}. "
+        "Expected one of: none, slides"
+    )
+
+
+@mcp.tool()
+def catalog_brief(
+    op: str,
+    deck_url: str | None = None,
+    brief_id: str | None = None,
+    name: str | None = None,
+    mood_keywords: list[str] | None = None,
+    brief: dict[str, Any] | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Catalog (portable user-owned brief library) ops. Dispatches by `op`:
+
+      - "save" → save_brief_to_catalog(deck_url, name, mood_keywords,
+                  brief_id, brief, overwrite)
+                  REQUIRES name; deck_url used when brief is omitted
+                  (reads active deck's brief).
+      - "use"  → use_catalog_brief(deck_url, brief_id)
+                  REQUIRES deck_url + brief_id.
+
+    To browse the library use `list_registry(kind='catalog_briefs', filter=mood)`.
+
+    Raises ValueError when required per-op params are missing or the op is
+    unknown.
+    """
+    if op == "save":
+        if not name:
+            raise ValueError("catalog_brief(op='save') requires name")
+        if deck_url is None and brief is None:
+            raise ValueError(
+                "catalog_brief(op='save') requires deck_url (to read brief "
+                "from deck) or an explicit brief="
+            )
+        return save_brief_to_catalog(
+            deck_url=deck_url or "",
+            name=name,
+            mood_keywords=mood_keywords,
+            brief_id=brief_id,
+            brief=brief,
+            overwrite=overwrite,
+        )
+    if op == "use":
+        if not deck_url or not brief_id:
+            raise ValueError("catalog_brief(op='use') requires deck_url + brief_id")
+        return use_catalog_brief(deck_url, brief_id)
+    raise ValueError(
+        f"Unknown catalog op: {op!r}. Expected one of: save, use"
+    )
 
 
 def main() -> None:

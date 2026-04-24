@@ -33,10 +33,10 @@ brief is the right vector; use it.
 ```python
 # 1. Propose + preview
 briefs = propose_brief_variants(intent, n=3)
-render_brief_swatch_grid(briefs)          # human picks
+preview(kind="brief_swatch_grid", briefs=briefs)   # human picks
 
 # 2. Commit FIRST — before any content slide
-set_theme_brief(deck_url, briefs[chosen])
+write_theme_brief(deck_url, mode="replace", brief=briefs[chosen])
 
 # 3. Every create_slide inherits — zero per-call palette args
 for content in contents:
@@ -59,11 +59,11 @@ When `orient_to_deck` reports `brief is None`:
 proposed = extract_theme_brief(deck_url)
 
 # 2. Show the human a swatch BEFORE committing
-render_brief_swatch(proposed["proposed_brief"])
+preview(kind="brief_swatch", brief=proposed["proposed_brief"])
 
 # 3. Human confirms or tweaks. Only then commit.
 if user_approves:
-    set_theme_brief(deck_url, proposed["proposed_brief"])
+    write_theme_brief(deck_url, mode="replace", brief=proposed["proposed_brief"])
 else:
     # Iterate on the brief before committing
     ...
@@ -78,7 +78,7 @@ After a generation pass (or when entering a drifted brownfield deck), run the
 coherence check and act on the hint:
 
 ```python
-report = audit_brief_coherence(deck_url)
+report = audit(deck_url, kind="brief_coherence")
 
 if report["coherence_score"] < 0.7:
     # Moderate-to-major drift → repaint across the board
@@ -94,7 +94,7 @@ elif report["coherence_score"] < 0.9:
     restyle_slides(deck_url, slide_ids=drift_ids, confirm_destructive=True)
 ```
 
-**Before you ship the deck:** one more `audit_brief_coherence` to confirm
+**Before you ship the deck:** one more `audit(kind="brief_coherence")` to confirm
 score ≥ 0.9. That's the gate.
 
 ## The override convention — when per-call hexes ARE justified
@@ -115,7 +115,7 @@ why. This makes the deviation reviewable and reversible.
 
 - "I forgot to read the brief." → run `get_theme_brief` before `create_slide`.
 - "I want to try another accent." → set the alternative via
-  `update_theme_brief` so every slide follows, or `restyle_slides(brief_overrides=…)`.
+  `write_theme_brief(mode="merge")` so every slide follows, or `restyle_slides(brief_overrides=…)`.
 - "The brief's color clashes with this content." → that's a brief bug, not
   a per-call fix. Escalate to the user.
 
@@ -136,10 +136,10 @@ assert "palette.category_set" in resp["brief_fields_used"], \
 
 - **Skipping `orient_to_deck` on a brownfield deck.** You'll commit slides
   that clash with the existing voice.
-- **Committing a brief before showing it to the user.** `set_theme_brief` is
+- **Committing a brief before showing it to the user.** `write_theme_brief(mode="replace")` is
   load-bearing — every future `create_slide` inherits. A bad brief is
   expensive to undo.
-- **Running `restyle_slides` without `audit_brief_coherence` first.** You
+- **Running `restyle_slides` without `audit(kind="brief_coherence")` first.** You
   don't know what's actually drifted; blind restyle may "correct" legitimate
   deliberate overrides.
 - **Committing a deck without a pre-ship coherence pass.** The score is the
@@ -149,4 +149,4 @@ assert "palette.category_set" in resp["brief_fields_used"], \
 
 - `rules/preview-workflow.md` — the "approve before commit" PIL primitives
 - `rules/theme-coherence.md` — meta-slide mechanics
-- `rules/brownfield-workflow.md` — restyle_slides + audit_typography loop
+- `rules/brownfield-workflow.md` — restyle_slides + audit(kind="typography") loop

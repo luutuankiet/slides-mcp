@@ -16,12 +16,12 @@ scalable.
 
 | Tool | Purpose |
 |------|---------|
-| `list_icons(filter_keyword?)` | Browse the catalog (name + category + keywords). Filter is substring match against name+category+keywords. |
+| `list_registry(kind="icons", filter=keyword?)` | Browse the catalog (name + category + keywords). Filter is substring match against name+category+keywords. |
 | `create_icon(deck_url, slide_id, at, name, fill_hex?, outline_hex?)` | Draw an icon onto a slide. Defaults fill to `brief.palette.accent`. |
 
 ## Workflow
 
-1. **Discover**: `list_icons("chart")` → `chart-up`, `chart-down`
+1. **Discover**: `list_registry(kind="icons", filter="chart")` → `chart-up`, `chart-down`
 2. **Place**: `create_icon(deck_url, slide_id, at=[13, 4, 1.2, 1.2], name="chart-up")`
 3. **Verify**: `render_thumbnail(slide_id)` — native MCP `ImageContent` back.
 
@@ -72,9 +72,9 @@ icons look right.
 - **Using `create_image` with an `[IMAGE: …]` placeholder** when an icon
   would nail it. Placeholders should describe raster needs (photos, screenshots,
   logos), NOT generic decoration a vanilla icon handles fine.
-- **Hand-composing shapes** for something already in `list_icons()` — the
+- **Hand-composing shapes** for something already in `list_registry(kind="icons")` — the
   registry is the fast path.
-- **Picking an icon without `list_icons("keyword")` first** — unknown names
+- **Picking an icon without `list_registry(kind="icons", filter="keyword")` first** — unknown names
   silently skip in archetype integrations but `create_icon` raises KeyError.
 - **Passing a `fill_hex` that fights the brief** — let the default resolve
   from `brief.palette.accent` so icons inherit the deck voice.

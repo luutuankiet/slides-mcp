@@ -13,7 +13,7 @@ stone (Decision P).
 
 Two v0.5.0 tool families cover the real last mile:
 
-- **Character-range styling** — `update_text_style` + `update_paragraph_style`
+- **Character-range styling** — `update_text(scope="run"|"paragraph")`
   (see `rules/character-styling.md`). Pop a word, italicize a quote, space
   out a title. Vanilla primitives — fonts, colors, alignment — land the
   editorial depth that image-heavy decks lean on but native-typography decks
@@ -235,7 +235,7 @@ dashboard screen"}` if no screenshot URL is at hand.
 ## v0.6.0 addendum — icons are vanilla too
 
 The "shapes-first, image-placeholder-as-fallback" rule extends to icons. Use
-`list_icons()` → `create_icon()` (or `3col_pill_cards.icon_names`) before
+`list_registry(kind="icons")` → `create_icon()` (or `3col_pill_cards.icon_names`) before
 reaching for `create_image([IMAGE: decorative-arrow])`. Icons are native Slides
 shapes under the hood — same theme-color flow, same crisp rendering. An agent
 that picks an Inter-bold-italic run + a `chart-up` icon + a teal accent bar has

@@ -131,12 +131,27 @@ DEFAULT_BRIEF: dict[str, Any] = {
         "heading": "Inter",
         "body": "Inter",
     },
+    # brand_assets — v0.9.1 (option i, text-first). Present when the deck is
+    # client-specific and theme-swap tooling needs to know what to replace
+    # (client name / date / vendor / etc.). Empty by default.
+    # Shape: [{id, type:"text"|"image", match, role?, replaceable?}]
+    "brand_assets": [],
 }
 """Illustrative default. The agent overrides per-deck from the user's intent —
 this is the *shape* a brief takes, not a brand. Bundled example.yaml style."""
 
 _ALLOWED_SHAPE_LANG = frozenset({"sharp", "rounded", "mixed"})
 _ALLOWED_NUMBERING = frozenset({"bold", "outlined", "dot", "hidden"})
+
+# Brand assets — v0.9.1 extension (option i, text-first).
+# Meta slide is the sole DNA channel (Decision R/S); brand identity belongs
+# alongside palette/fonts so theme-swap tooling reads one source of truth.
+# v1 scope: text-based assets (client name, date, tagline). Image support
+# captures the shape objectId now; full image-swap flow lands with theme_swap.
+_ALLOWED_BRAND_ASSET_TYPES = frozenset({"text", "image"})
+_ALLOWED_BRAND_ASSET_ROLES = frozenset(
+    {"client", "vendor", "co_brand", "tagline", "date", "other"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +170,74 @@ def _hex_or_none(value: Any) -> str | None:
             return None
         return v.upper()
     return None
+
+
+def _validate_brand_assets(ba: Any) -> list[str]:
+    """Validate brand_assets list — v0.9.1. Returns list of errors (empty = ok)."""
+    errors: list[str] = []
+    if not isinstance(ba, list):
+        return [f"brand_assets must be a list, got {type(ba).__name__}"]
+    seen_ids: set[str] = set()
+    for i, asset in enumerate(ba):
+        if not isinstance(asset, dict):
+            errors.append(f"brand_assets[{i}] must be a dict")
+            continue
+        aid = asset.get("id")
+        if not isinstance(aid, str) or not aid.strip():
+            errors.append(f"brand_assets[{i}].id must be a non-empty string")
+        elif aid in seen_ids:
+            errors.append(
+                f"brand_assets[{i}].id {aid!r} duplicates an earlier entry"
+            )
+        else:
+            seen_ids.add(aid)
+        atype = asset.get("type")
+        if atype not in _ALLOWED_BRAND_ASSET_TYPES:
+            errors.append(
+                f"brand_assets[{i}].type {atype!r} not in "
+                f"{sorted(_ALLOWED_BRAND_ASSET_TYPES)}"
+            )
+        match = asset.get("match")
+        if not isinstance(match, str) or not match.strip():
+            errors.append(f"brand_assets[{i}].match must be a non-empty string")
+        role = asset.get("role")
+        if role is not None and role not in _ALLOWED_BRAND_ASSET_ROLES:
+            errors.append(
+                f"brand_assets[{i}].role {role!r} not in "
+                f"{sorted(_ALLOWED_BRAND_ASSET_ROLES)}"
+            )
+        replaceable = asset.get("replaceable")
+        if replaceable is not None and not isinstance(replaceable, bool):
+            errors.append(f"brand_assets[{i}].replaceable must be a bool")
+    return errors
+
+
+def _validate_plan(plan: Any) -> list[str]:
+    """Tolerant validator — plan schema is v0.9.x seed for plan_deck tool.
+
+    Enforces only top-level shape bugs. Structure will tighten when plan_deck
+    lands as a proper MCP tool; for now the schema accepts the seed while
+    catching obvious type errors.
+
+    Shape (v0.9.x seed — mirror of gsd-lite mental model):
+        vision: str          — PROJECT.md analog (central narrative)
+        arc: str             — rhetorical shape (hook → problem → evidence → ask)
+        sections: list       — ARCHITECTURE.md analog (slide grouping)
+        slides: list         — ARCHITECTURE.md analog (ordered intents)
+        worklog: list        — WORK.md analog (decisions + pivots)
+    """
+    errors: list[str] = []
+    if not isinstance(plan, dict):
+        return [f"plan must be a dict, got {type(plan).__name__}"]
+    for key, expected in (("vision", str), ("arc", str)):
+        v = plan.get(key)
+        if v is not None and not isinstance(v, expected):
+            errors.append(f"plan.{key} must be a {expected.__name__}")
+    for key in ("sections", "slides", "worklog"):
+        v = plan.get(key)
+        if v is not None and not isinstance(v, list):
+            errors.append(f"plan.{key} must be a list")
+    return errors
 
 
 def validate_brief(brief: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -219,6 +302,14 @@ def validate_brief(brief: dict[str, Any]) -> tuple[bool, list[str]]:
                     )
                 if isinstance(v, str) and not v.strip():
                     errors.append(f"font_family.{axis} must be non-empty if provided")
+
+    ba = brief.get("brand_assets")
+    if ba is not None:
+        errors.extend(_validate_brand_assets(ba))
+
+    plan = brief.get("plan")
+    if plan is not None:
+        errors.extend(_validate_plan(plan))
 
     return (not errors), errors
 

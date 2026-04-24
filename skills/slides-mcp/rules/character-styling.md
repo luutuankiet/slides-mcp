@@ -7,8 +7,10 @@ your job is "the body reads monolithic — pop the first sentence."
 
 Two bespoke tools cover this:
 
-- `update_text_style` — character-level (bold, italic, color, size, font, underline, baseline offset)
-- `update_paragraph_style` — paragraph-level (alignment, line spacing, indent, space above/below)
+- `update_text(scope="run", ...)` — character-level (bold, italic, color, size, font, underline, baseline offset)
+- `update_text(scope="paragraph", ...)` — paragraph-level (alignment, line spacing, indent, space above/below)
+
+Under the hood these dispatch to `update_text_style` and `update_paragraph_style` — which are still importable for Python callers.
 
 Both share ONE range language. The server resolves the range from the shape's
 real text; you never compute UTF-16 indices.
@@ -27,7 +29,7 @@ genuinely need a specific offset (e.g. 2nd of 3 "the" occurrences); in that
 case, read the shape first with `get_slide(include_styles=True)` to see the
 text, count the chars, then target.
 
-## `update_text_style` — the style subset
+## `update_text(scope="run")` — the style subset
 
 | Key | Type | Example |
 |-----|------|---------|
@@ -46,7 +48,7 @@ text, count the chars, then target.
 Unknown keys raise `ValueError` — typos surface server-side, not in Google's
 opaque error messages.
 
-## `update_paragraph_style` — the paragraph subset
+## `update_text(scope="paragraph")` — the paragraph subset
 
 | Key | Type | Example |
 |-----|------|---------|
@@ -137,10 +139,10 @@ update_paragraph_style(
 
 After `create_slide` with plain content, layer in depth:
 
-1. **Discover the object_ids.** `get_slide(deck, slide_id, include_styles=True)` returns the slide's structured runs + `_object_ids` map (`title`, `body_paragraph`, `paragraphs[i]`). Every `update_text_style` call needs an `object_id` — this is where you get it.
-2. `update_text_style(title_id, range="all", style={"fontSize": 48})` — size the hero
-3. `update_text_style(body_id, range={"paragraph": 0}, style={"bold": True})` — lead with weight
-4. `update_text_style(body_id, range={"match": accent_word}, style={"foregroundColor": accent_hex})` — color the keyword
+1. **Discover the object_ids.** `get_slide(deck, slide_id, include_styles=True)` returns the slide's structured runs + `_object_ids` map (`title`, `body_paragraph`, `paragraphs[i]`). Every `update_text` call needs an `object_id` — this is where you get it.
+2. `update_text(deck_url, slide_id, title_id, scope="run", range="all", style={"fontSize": 48})` — size the hero
+3. `update_text(deck_url, slide_id, body_id, scope="run", range={"paragraph": 0}, style={"bold": True})` — lead with weight
+4. `update_text(deck_url, slide_id, body_id, scope="run", range={"match": accent_word}, style={"foregroundColor": accent_hex})` — color the keyword
 5. `render_thumbnail` — see it
 6. Iterate
 
@@ -150,8 +152,8 @@ After `create_slide` with plain content, layer in depth:
 
 | Anti-pattern | Why it's bad | Fix |
 |--------------|-------------|-----|
-| `exec_batch_update` with hand-rolled `updateTextStyle` | Agent-blind UTF-16 math; no match-mode safety; no auto-thumbnail | Use `update_text_style` with range language |
+| `exec_batch_update` with hand-rolled `updateTextStyle` | Agent-blind UTF-16 math; no match-mode safety; no auto-thumbnail | Use `update_text(scope="run")` with range language |
 | `range={"match": "the"}` on ambiguous text | Raises `ValueError` | Pick a unique substring OR use `chars` with `get_slide(include_styles=True)` to count |
 | Blind edit, no thumbnail | Silent mis-target possible; style lands on wrong range | Keep `verify="auto"` default; chain `render_thumbnail` |
 | Asking for paragraph N when text has blank separators | "Paragraph 1" of `"A\n\nB\n\nC"` is `B` (2nd VISIBLE), not the empty string | Already handled — just trust it |
-| Applying character styling via `patch_slide` DSL | `patch_slide` diffs the DSL at slot level; fine-grained runs don't survive | Use `update_text_style` directly on the slot's `object_id` |
+| Applying character styling via `patch_slide` DSL | `patch_slide` diffs the DSL at slot level; fine-grained runs don't survive | Use `update_text(scope="run")` directly on the slot's `object_id` |

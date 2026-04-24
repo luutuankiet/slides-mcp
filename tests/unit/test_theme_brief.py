@@ -621,3 +621,229 @@ def test_serialize_still_parses_after_preamble_expansion():
     # Schema version is stamped on serialize; compare ignoring any version drift.
     for k in ("palette", "shape_language", "numbering_style", "tone"):
         assert parsed.get(k) == brief.get(k)
+
+
+# ---------------------------------------------------------------------------
+# brand_assets validation (v0.9.1 — option i, text-first)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_accepts_empty_brand_assets():
+    brief = {"palette": {"surface": "#000000"}, "brand_assets": []}
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_accepts_text_brand_asset():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [
+            {"id": "client_name", "type": "text", "match": "Joon Solutions", "role": "client"},
+        ],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_accepts_image_brand_asset():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [
+            {"id": "client_logo", "type": "image", "match": "g3a1c10c237c_0_86", "role": "client"},
+        ],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_accepts_multiple_brand_assets_with_replaceable_flag():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [
+            {"id": "client_name", "type": "text", "match": "Acme Co", "role": "client"},
+            {"id": "vendor_name", "type": "text", "match": "Looker", "role": "vendor", "replaceable": False},
+            {"id": "date", "type": "text", "match": "January 2026", "role": "date"},
+        ],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_rejects_non_list_brand_assets():
+    brief = {"palette": {"surface": "#000000"}, "brand_assets": "not a list"}
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("brand_assets must be a list" in e for e in errors)
+
+
+def test_validate_rejects_brand_asset_missing_id():
+    brief = {"palette": {"surface": "#000000"}, "brand_assets": [{"type": "text", "match": "foo"}]}
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("brand_assets[0].id" in e for e in errors)
+
+
+def test_validate_rejects_brand_asset_empty_id():
+    brief = {"palette": {"surface": "#000000"}, "brand_assets": [{"id": "", "type": "text", "match": "foo"}]}
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("brand_assets[0].id" in e for e in errors)
+
+
+def test_validate_rejects_duplicate_brand_asset_ids():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [
+            {"id": "x", "type": "text", "match": "a"},
+            {"id": "x", "type": "text", "match": "b"},
+        ],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("duplicates" in e for e in errors)
+
+
+def test_validate_rejects_bad_brand_asset_type():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [{"id": "x", "type": "video", "match": "foo"}],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("brand_assets[0].type" in e for e in errors)
+
+
+def test_validate_rejects_brand_asset_missing_match():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [{"id": "x", "type": "text"}],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("brand_assets[0].match" in e for e in errors)
+
+
+def test_validate_rejects_bad_brand_asset_role():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [{"id": "x", "type": "text", "match": "foo", "role": "random"}],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("brand_assets[0].role" in e for e in errors)
+
+
+def test_validate_rejects_bad_replaceable_type():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "brand_assets": [{"id": "x", "type": "text", "match": "foo", "replaceable": "yes"}],
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("replaceable" in e for e in errors)
+
+
+def test_serialize_preserves_brand_assets_roundtrip():
+    brief = {
+        "version": 1,
+        "palette": {"surface": "#0F1A4A", "accent": "#E8612E", "text": "#000000"},
+        "brand_assets": [
+            {"id": "client_name", "type": "text", "match": "Joon Solutions", "role": "client"},
+            {"id": "vendor", "type": "text", "match": "Looker", "role": "vendor", "replaceable": False},
+        ],
+    }
+    body = tb.serialize_brief(brief)
+    parsed = tb.parse_brief_body(body)
+    assert parsed is not None
+    assert parsed["brand_assets"] == brief["brand_assets"]
+
+
+def test_merge_brief_brand_assets_list_replaces_wholesale():
+    existing = {
+        "brand_assets": [
+            {"id": "a", "type": "text", "match": "A"},
+            {"id": "b", "type": "text", "match": "B"},
+        ]
+    }
+    changes = {"brand_assets": [{"id": "c", "type": "text", "match": "C"}]}
+    out = tb.merge_brief(existing, changes)
+    assert out["brand_assets"] == [{"id": "c", "type": "text", "match": "C"}]
+
+
+def test_default_brief_has_empty_brand_assets():
+    assert "brand_assets" in tb.DEFAULT_BRIEF
+    assert tb.DEFAULT_BRIEF["brand_assets"] == []
+
+
+# ---------------------------------------------------------------------------
+# plan field validation (v0.9.x seed for plan_deck tool)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_accepts_absent_plan():
+    brief = {"palette": {"surface": "#000000"}}
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_accepts_minimal_plan():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "plan": {"vision": "Pitch the Q2 board on revenue expansion"},
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_accepts_full_plan_shape():
+    brief = {
+        "palette": {"surface": "#000000"},
+        "plan": {
+            "vision": "Q2 board pitch",
+            "arc": "hook → problem → evidence → ask",
+            "sections": [{"id": "intro", "title": "Setup", "slide_ids": ["s1"]}],
+            "slides": [
+                {"id": "s1", "intent": "Open with hook", "archetype_hint": "title_hook"},
+                {"id": "s3", "intent": "Comparison table", "archetype_hint": "comparison_table"},
+            ],
+            "worklog": [{"ts": "2026-04-24", "event": "plan committed"}],
+        },
+    }
+    ok, errors = tb.validate_brief(brief)
+    assert ok, errors
+
+
+def test_validate_rejects_non_dict_plan():
+    brief = {"palette": {"surface": "#000000"}, "plan": "not a dict"}
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("plan must be a dict" in e for e in errors)
+
+
+def test_validate_rejects_non_string_plan_vision():
+    brief = {"palette": {"surface": "#000000"}, "plan": {"vision": 42}}
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("plan.vision must be a str" in e for e in errors)
+
+
+def test_validate_rejects_non_list_plan_sections():
+    brief = {"palette": {"surface": "#000000"}, "plan": {"sections": {"not": "list"}}}
+    ok, errors = tb.validate_brief(brief)
+    assert not ok
+    assert any("plan.sections must be a list" in e for e in errors)
+
+
+def test_plan_preserves_roundtrip():
+    brief = {
+        "version": 1,
+        "palette": {"surface": "#000000"},
+        "plan": {
+            "vision": "Test vision",
+            "slides": [{"id": "s1", "intent": "open"}],
+        },
+    }
+    body = tb.serialize_brief(brief)
+    parsed = tb.parse_brief_body(body)
+    assert parsed is not None
+    assert parsed["plan"] == brief["plan"]

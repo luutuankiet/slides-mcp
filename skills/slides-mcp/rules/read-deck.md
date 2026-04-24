@@ -63,7 +63,7 @@ list_slides_by(deck_url, archetype="text_left_image_right", contains_text="roadm
 ## Archetype inventory
 
 ```
-list_deck_layouts(deck_url)
+list_registry(kind="deck_layouts", deck_url=deck_url)
 ```
 
 Returns per-archetype counts + first-slide-id per bucket. Useful for "how consistent is this deck's structure?"
