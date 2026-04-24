@@ -3629,6 +3629,443 @@ def preview_archetype(
 
 
 # ---------------------------------------------------------------------------
+# plan_deck + theme_swap (v0.11.0) — deck-level narrative + client-ready clone
+# ---------------------------------------------------------------------------
+
+_SECTION_OPENER_ARCHETYPES: frozenset[str] = frozenset({
+    "section_opener",
+    "section_divider",
+    "cover_with_hero",
+})
+
+
+def _get_deck_outline_for_plan(deck_url: str) -> list[dict[str, Any]]:
+    """Thin wrapper reusing get_deck_outline; returns its slides list."""
+    outline = get_deck_outline(deck_url)
+    return outline.get("slides", [])
+
+
+def _plan_from_outline(outline_slides: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a deck plan from an existing deck outline.
+
+    Sections are inferred via section_opener-style archetype transitions; when
+    absent, all slides fall into a single implicit section so callers still
+    get a usable `plan.slides` list for hand-editing.
+    """
+    slides_payload: list[dict[str, Any]] = [
+        {
+            "id": s.get("slide_id"),
+            "intent": s.get("title") or "",
+            "archetype_hint": s.get("archetype", "generic_layout"),
+        }
+        for s in outline_slides
+    ]
+
+    sections: list[dict[str, Any]] = []
+    current_section: dict[str, Any] | None = None
+    for s in outline_slides:
+        arch = s.get("archetype", "generic_layout")
+        sid = s.get("slide_id")
+        title = s.get("title") or ""
+        if arch in _SECTION_OPENER_ARCHETYPES or current_section is None:
+            if current_section is not None:
+                sections.append(current_section)
+            current_section = {
+                "id": f"section_{len(sections)}",
+                "title": title or arch,
+                "slide_ids": [sid] if sid else [],
+            }
+        else:
+            if sid:
+                current_section["slide_ids"].append(sid)
+    if current_section is not None:
+        sections.append(current_section)
+
+    return {
+        "vision": "",
+        "arc": "",
+        "sections": sections,
+        "slides": slides_payload,
+        "worklog": [],
+    }
+
+
+_HEADER_RE = __import__("re").compile(r"^(#{1,2})\s+(.+?)\s*$")
+
+
+def _plan_from_doc(doc_path: str) -> tuple[dict[str, Any], list[str]]:
+    """Parse a markdown doc into a plan. H1 = vision; H2 = sections/slides.
+
+    Returns (plan, warnings). Raises FileNotFoundError when doc_path is missing.
+    """
+    warnings: list[str] = []
+    path = Path(doc_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"doc_path not found: {path}")
+    text = path.read_text(encoding="utf-8", errors="replace")
+
+    vision_parts: list[str] = []
+    sections: list[dict[str, Any]] = []
+    slides: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        m = _HEADER_RE.match(line)
+        if not m:
+            continue
+        level = len(m.group(1))
+        title = m.group(2).strip()
+        if level == 1:
+            vision_parts.append(title)
+        elif level == 2:
+            section_id = f"section_{len(sections)}"
+            slide_id = f"slide_{len(slides)}"
+            sections.append({
+                "id": section_id,
+                "title": title,
+                "slide_ids": [slide_id],
+            })
+            slides.append({
+                "id": slide_id,
+                "intent": title,
+                "archetype_hint": "text_heavy_body",
+            })
+    vision = " — ".join(vision_parts) if vision_parts else ""
+    if not sections:
+        warnings.append(
+            f"no H2 headers found in {path}; plan.sections + plan.slides are empty"
+        )
+    plan = {
+        "vision": vision,
+        "arc": vision,
+        "sections": sections,
+        "slides": slides,
+        "worklog": [],
+    }
+    return plan, warnings
+
+
+@mcp.tool()
+def plan_deck(
+    deck_url: str,
+    intent: str = "",
+    source: str = "free_text",
+    doc_path: str | None = None,
+    commit: bool = False,
+) -> dict[str, Any]:
+    """Propose a deck-level narrative plan (vision + sections + slides + worklog).
+
+    Plan is the deck-level gsd-lite footprint — it captures the WHY of the
+    deck (vision + arc), the WHAT (sections + slides), and the decision
+    trail (worklog) so a future agent or reviewer can reconstruct intent
+    without re-reading every slide. Stored on the meta-slide alongside the
+    visual brief when committed (Decision R/S — single DNA channel).
+
+    Pure proposal by default. When `commit=True`, merges the proposed plan
+    into the deck's theme brief via ``write_theme_brief(mode='merge',
+    delta={'plan': plan})``. Requires an existing meta-slide — if absent,
+    returns ``status='proposed'`` with a warning pointing to
+    ``write_theme_brief(mode='scaffold')``.
+
+    source modes:
+      - ``free_text`` (default): parse ``intent`` as the deck vision. Emits
+        empty sections/slides; caller fills in structure later.
+        Confidence: ``low``.
+      - ``brownfield_deck``: read the existing slide outline, group slides
+        into sections via section_opener-style archetype transitions, and
+        emit per-slide intents from titles. Confidence: ``medium``.
+      - ``doc``: read markdown at ``doc_path``; H1 headers join into the
+        vision string, H2 headers become sections + slide intents.
+        Confidence: ``medium`` when ≥2 sections found, else ``low``.
+
+    Returns ``{deck_id, status, plan, proposal_source, confidence,
+    next_step_hint, warnings}``.
+
+    Raises ValueError on unknown ``source``, missing ``doc_path`` when
+    ``source='doc'``. Raises FileNotFoundError when ``doc_path`` doesn't
+    exist.
+    """
+    if source not in ("free_text", "brownfield_deck", "doc"):
+        raise ValueError(
+            f"source must be one of free_text|brownfield_deck|doc; got {source!r}"
+        )
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    warnings: list[str] = []
+    confidence: str
+
+    if source == "free_text":
+        arc = intent if len(intent) <= 80 else intent[:80] + "..."
+        plan: dict[str, Any] = {
+            "vision": intent,
+            "arc": arc,
+            "sections": [],
+            "slides": [],
+            "worklog": [],
+        }
+        confidence = "low"
+    elif source == "brownfield_deck":
+        outline_slides = _get_deck_outline_for_plan(deck_url)
+        plan = _plan_from_outline(outline_slides)
+        if intent:
+            plan["vision"] = intent
+            plan["arc"] = intent if len(intent) <= 80 else intent[:80] + "..."
+        confidence = "medium"
+    else:  # doc
+        if not doc_path:
+            raise ValueError("source='doc' requires doc_path")
+        plan, doc_warnings = _plan_from_doc(doc_path)
+        warnings.extend(doc_warnings)
+        if intent and not plan["vision"]:
+            plan["vision"] = intent
+            plan["arc"] = intent if len(intent) <= 80 else intent[:80] + "..."
+        confidence = "medium" if len(plan.get("sections") or []) >= 2 else "low"
+
+    status = "proposed"
+    if commit:
+        try:
+            write_theme_brief(
+                deck_url=deck_url, mode="merge", delta={"plan": plan}
+            )
+            status = "committed"
+        except FileNotFoundError:
+            warnings.append(
+                "no meta brief to merge into — commit via "
+                "write_theme_brief(mode='scaffold') first, then retry"
+            )
+
+    if status == "committed":
+        next_step_hint = (
+            "plan merged onto meta-slide; call get_theme_brief(deck_url) to verify"
+        )
+    elif commit and status == "proposed":
+        next_step_hint = (
+            "plan NOT committed (no meta-slide). Run "
+            "write_theme_brief(mode='scaffold') then re-call plan_deck(..., commit=True)"
+        )
+    else:
+        next_step_hint = (
+            "review proposed plan; re-call plan_deck(..., commit=True) to merge "
+            "onto the meta-slide. The plan can be edited freely before committing."
+        )
+
+    return {
+        "deck_id": deck_id,
+        "status": status,
+        "plan": plan,
+        "proposal_source": source,
+        "confidence": confidence,
+        "next_step_hint": next_step_hint,
+        "warnings": warnings,
+    }
+
+
+@mcp.tool()
+def theme_swap(
+    source_deck_url: str,
+    new_title: str,
+    target_brief: dict[str, Any] | None = None,
+    target_brief_delta: dict[str, Any] | None = None,
+    asset_overrides: dict[str, str] | None = None,
+    confirm_destructive: bool = False,
+) -> dict[str, Any]:
+    """Clone a source deck, apply a target brief, swap brand assets → client-ready deck.
+
+    The client-ready-deck ceremony collapsed into one call:
+
+      1. Read source deck's brief — must have ``brand_assets`` to swap.
+      2. ``clone_deck(source_deck_url, new_title)`` → new deck.
+      3. If ``target_brief`` or ``target_brief_delta`` is set: apply via
+         ``apply_brief_and_restyle`` on the new deck (retroactive repaint).
+      4. For each ``(asset_id, new_value)`` in ``asset_overrides``:
+           - find the matching brand_asset in the source brief by ``id``
+           - if ``asset.type == 'text'``: emit ``replaceAllText`` with
+             ``containsText.text == asset.match`` and ``replaceText == new_value``
+           - if ``asset.type == 'image'``: emit ``replaceImage`` for the
+             shape whose objectId == ``asset.match``, with ``url=new_value`` +
+             ``imageReplaceMethod='CENTER_INSIDE'``
+      5. Update the new deck's brief ``brand_assets`` list so each swapped
+         asset's ``match`` reflects the new value (text-mode only; image-mode
+         keeps the same shape objectId).
+
+    Pass **exactly one** of ``target_brief`` (wholesale) or
+    ``target_brief_delta`` (deep-merge). Both may be ``None`` for an
+    asset-swap-only ceremony with no restyle.
+
+    ``confirm_destructive=True`` is required — clone + restyle combined are
+    non-reversible from the user's POV (it's a new deck + overwritten styles).
+
+    Args:
+        source_deck_url: the deck to clone. Must have a brief with
+            ``brand_assets`` (even if empty when no swap is needed — the
+            field presence signals intent).
+        new_title: the new deck's title.
+        target_brief: full brief dict to apply on the clone. Mutually
+            exclusive with ``target_brief_delta``.
+        target_brief_delta: partial changes to deep-merge onto the source
+            brief. Mutually exclusive with ``target_brief``.
+        asset_overrides: ``{asset_id: new_value}``. Unknown asset ids
+            surface as warnings (skip, don't raise). Empty/None = no swaps.
+        confirm_destructive: required True.
+
+    Returns::
+
+        {
+            new_deck_url, new_deck_id, source_deck_id,
+            assets_swapped: [{id, type, old_match, new_value}, ...],
+            restyle_applied: bool,
+            warnings: [...],
+        }
+
+    Raises:
+        ValueError if both ``target_brief`` and ``target_brief_delta`` are
+            set, or if ``confirm_destructive`` is False, or if the source
+            deck has no brief / no brand_assets attribute.
+    """
+    if not confirm_destructive:
+        raise ValueError(
+            "theme_swap clones + repaints + swaps brand assets — "
+            "non-reversible. Re-invoke with confirm_destructive=True."
+        )
+    if target_brief is not None and target_brief_delta is not None:
+        raise ValueError(
+            "pass at most one of target_brief (wholesale) or "
+            "target_brief_delta (merge) — not both"
+        )
+
+    # --- Step 1: read source brief --------------------------------------
+    src_id = slides_api.deck_id_from_url(source_deck_url)
+    src_prez = _fetch_for_brief(src_id)
+    src_meta = theme_brief_mod.find_meta_slide(src_prez)
+    if src_meta is None:
+        raise ValueError(
+            "source deck has no brief; run scaffold (write_theme_brief(mode='scaffold')) "
+            "or set_theme_brief first"
+        )
+    src_brief = theme_brief_mod.parse_brief_body(src_meta["body_text"])
+    if src_brief is None:
+        raise ValueError(
+            "source deck meta-slide found but body did not parse as a brief"
+        )
+    src_brand_assets = src_brief.get("brand_assets")
+    if src_brand_assets is None:
+        raise ValueError(
+            "source deck brief has no brand_assets field; nothing to swap. "
+            "Add brand_assets via write_theme_brief(mode='merge', delta=...) first."
+        )
+
+    warnings: list[str] = []
+
+    # --- Step 2: clone deck ---------------------------------------------
+    clone_result = clone_deck(src_url=source_deck_url, new_title=new_title)
+    new_deck_id = clone_result["new_deck_id"]
+    new_deck_url = clone_result["new_deck_url"]
+
+    # --- Step 3: apply brief (optional) ---------------------------------
+    restyle_applied = False
+    if target_brief is not None:
+        apply_brief_and_restyle(
+            deck_url=new_deck_url,
+            brief=target_brief,
+            confirm_destructive=True,
+        )
+        restyle_applied = True
+    elif target_brief_delta is not None:
+        apply_brief_and_restyle(
+            deck_url=new_deck_url,
+            delta=target_brief_delta,
+            confirm_destructive=True,
+        )
+        restyle_applied = True
+
+    # --- Step 4: brand-asset swaps --------------------------------------
+    asset_index = {a.get("id"): a for a in src_brand_assets if isinstance(a, dict)}
+    swap_records: list[dict[str, Any]] = []
+    text_requests: list[dict[str, Any]] = []
+    image_requests: list[dict[str, Any]] = []
+    new_brand_assets_delta: dict[str, str] = {}
+
+    for asset_id, new_value in (asset_overrides or {}).items():
+        asset = asset_index.get(asset_id)
+        if asset is None:
+            warnings.append(
+                f"asset_overrides[{asset_id!r}] not in source brand_assets — skipped"
+            )
+            continue
+        atype = asset.get("type")
+        match = asset.get("match")
+        if atype == "text":
+            text_requests.append({
+                "replaceAllText": {
+                    "containsText": {"text": match, "matchCase": True},
+                    "replaceText": new_value,
+                }
+            })
+            swap_records.append({
+                "id": asset_id, "type": "text",
+                "old_match": match, "new_value": new_value,
+            })
+            new_brand_assets_delta[asset_id] = new_value
+        elif atype == "image":
+            image_requests.append({
+                "replaceImage": {
+                    "imageObjectId": match,
+                    "url": new_value,
+                    "imageReplaceMethod": "CENTER_INSIDE",
+                }
+            })
+            swap_records.append({
+                "id": asset_id, "type": "image",
+                "old_match": match, "new_value": new_value,
+            })
+        else:
+            warnings.append(
+                f"asset_overrides[{asset_id!r}] has unknown type {atype!r} — skipped"
+            )
+
+    if text_requests:
+        slides_api.batch_update(new_deck_id, text_requests)
+    if image_requests:
+        slides_api.batch_update(new_deck_id, image_requests)
+
+    # --- Step 5: update new-deck brief brand_assets (text swaps only) ---
+    if new_brand_assets_delta:
+        try:
+            new_prez = _fetch_for_brief(new_deck_id)
+            new_meta = theme_brief_mod.find_meta_slide(new_prez)
+            if new_meta is not None:
+                new_brief_current = theme_brief_mod.parse_brief_body(
+                    new_meta["body_text"]
+                )
+                if new_brief_current is not None:
+                    updated_assets = []
+                    for asset in new_brief_current.get("brand_assets") or []:
+                        if isinstance(asset, dict) and asset.get("id") in new_brand_assets_delta:
+                            asset_copy = dict(asset)
+                            if asset.get("type") == "text":
+                                asset_copy["match"] = new_brand_assets_delta[
+                                    asset["id"]
+                                ]
+                            updated_assets.append(asset_copy)
+                        else:
+                            updated_assets.append(asset)
+                    write_theme_brief(
+                        deck_url=new_deck_url,
+                        mode="merge",
+                        delta={"brand_assets": updated_assets},
+                    )
+        except Exception as e:  # noqa: BLE001 — best-effort brief refresh
+            warnings.append(f"brand_assets brief refresh on new deck failed: {e}")
+
+    return {
+        "source_deck_id": src_id,
+        "new_deck_id": new_deck_id,
+        "new_deck_url": new_deck_url,
+        "assets_swapped": swap_records,
+        "restyle_applied": restyle_applied,
+        "warnings": warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher tools (v0.9+): collapsed MCP tool surface
 #
 # Each dispatcher is ONE @mcp.tool() whose `kind` / `mode` / `op` argument

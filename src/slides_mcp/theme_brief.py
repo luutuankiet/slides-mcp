@@ -48,6 +48,9 @@ WARNING_PREAMBLE: str = (
     "This is a hidden slide (isSkipped=True) used by slides-mcp to store the deck's\n"
     "visual brief. Google Slides version history restores it if accidentally removed.\n"
     "\n"
+    "This slide also carries the deck's PLAN (narrative skeleton) when set — edit\n"
+    "via plan_deck MCP tool, not by hand.\n"
+    "\n"
     "Rebuild if deleted: scaffold_meta_brief(deck_url) proposes a brief from the\n"
     "deck's existing palette; review and commit via set_theme_brief. One-shot for\n"
     "high-confidence decks: scaffold_meta_brief(deck_url, auto_commit_if_high_confidence=True).\n"
@@ -78,6 +81,15 @@ SPEAKER_NOTES_TEXT: str = (
     "     it when confidence is high. For low-confidence decks, review the\n"
     "     proposal before committing via set_theme_brief.\n"
     "\n"
+    "──── About the plan field ────\n"
+    "The brief may carry an optional `plan` block alongside palette/fonts:\n"
+    "  - vision + arc     (PROJECT.md analog — central deck narrative)\n"
+    "  - sections + slides (ARCHITECTURE.md analog — ordered slide intents)\n"
+    "  - worklog          (WORK.md analog — decisions + pivots during build)\n"
+    "The plan is a deck-level gsd-lite footprint: it captures the WHY of the\n"
+    "deck so a future agent (or human reviewer) can reconstruct intent without\n"
+    "re-reading every slide. Edit via plan_deck MCP tool — do NOT hand-edit.\n"
+    "\n"
     "──── Do not edit by hand ────\n"
     "The body text box below carries the brief as YAML. Hand-editing can break\n"
     "parse-back. Use these MCP tools instead:\n"
@@ -87,6 +99,7 @@ SPEAKER_NOTES_TEXT: str = (
     "  - extract_theme_brief(deck_url)          — brownfield propose\n"
     "  - scaffold_meta_brief(deck_url)          — one-shot brownfield\n"
     "  - apply_brief_and_restyle(deck_url, …)   — commit + retroactive repaint\n"
+    "  - plan_deck(deck_url, intent, source, commit=?) — propose/commit deck plan\n"
 )
 """Text populated into the meta slide's speaker notes on creation. Humans who
 open the Notes pane in Google Slides see this — a more durable audience than

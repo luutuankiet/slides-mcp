@@ -601,6 +601,21 @@ def test_speaker_notes_text_carries_key_phrases():
     assert "update_theme_brief" in text
 
 
+def test_warning_preamble_mentions_plan_field():
+    """v0.11.0: preamble advertises the plan field + plan_deck tool."""
+    assert "PLAN" in tb.WARNING_PREAMBLE
+    assert "plan_deck" in tb.WARNING_PREAMBLE
+
+
+def test_speaker_notes_text_mentions_plan_field():
+    """v0.11.0: notes explain the plan field's role."""
+    text = tb.SPEAKER_NOTES_TEXT
+    assert "plan" in text.lower()
+    assert "plan_deck" in text
+    # WORK.md / PROJECT.md analog language should appear
+    assert "vision" in text.lower() or "narrative" in text.lower()
+
+
 def test_build_notes_populate_requests_shape():
     reqs = tb.build_notes_populate_requests("notes_body_1")
     assert len(reqs) == 1
