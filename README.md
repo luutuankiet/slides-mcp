@@ -139,6 +139,13 @@ For a 50-slide deck:
 
 Don't pull `full` on every slide. Start with outline, drill into the 5–10 slides that matter.
 
+## Anti-patterns
+
+- ❌ Calling `read_slides(detail="full")` with no slide selector on first contact — wastes tokens. Outline first.
+- ❌ Calling `render_thumbnail` for every slide "just to see what they look like." Pick 1–3 with genuine visual interest.
+- ❌ Using `detail="raw"` for content reasoning. It's geometry/style for debugging only — text is cleaner in `full`.
+- ❌ Asking the server to edit a slide. v2 cannot. Tell the user, or pin `uvx slides-mcp@0.11.0`.
+
 ## Status
 
 v2.0.0 — released April 2026. Breaking change: all write tools removed. v0.11 → v2.0.
