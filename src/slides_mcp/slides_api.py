@@ -1,12 +1,13 @@
-"""Google Slides REST wrapper.
+"""Google Slides REST wrapper — read-only surface (v2).
 
-Public surface mirrors what the MCP tool layer needs:
+Public surface mirrors what the v2 MCP tool layer needs:
   - deck_id_from_url(url)          → parsed ID
   - get_presentation(deck_id)      → whole presentation w/ minimal FieldMask
   - get_slide(deck_id, slide_id)   → one slide + its notes
-  - batch_update(deck_id, reqs)    → apply requests, return reply
-  - get_thumbnail(deck_id, slide_id, size) → thumbnail PNG URL
+  - get_thumbnail(deck_id, ...)    → thumbnail PNG URL
+  - get_thumbnail_bytes(...)       → thumbnail PNG bytes
 
+v1 batch_update + copy_deck were dropped along with the write surface.
 All calls use a cached googleapiclient service built from token.json.
 """
 from __future__ import annotations
@@ -22,11 +23,15 @@ from googleapiclient.errors import HttpError
 
 from .auth import load_credentials
 
-# Minimal field masks — what we actually need for projection + classification.
+# Minimal field mask: title + page elements with the geometry/text/colors we
+# project at any detail level. Tighter than v1's mask (no shape-property
+# fields needed for write-side roundtrip).
 DECK_OUTLINE_FIELDS = (
     "presentationId,title,revisionId,"
     "slides.objectId,"
-    "slides.slideProperties.layoutObjectId,"
+    "slides.slideProperties.notesPage.pageElements("
+    "objectId,shape.placeholder,shape.text.textElements.textRun.content"
+    "),"
     "slides.pageElements("
     "objectId,size,transform,"
     "shape.shapeType,"
@@ -58,7 +63,6 @@ SLIDE_FULL_FIELDS = (
     ")"
 )
 
-
 _URL_PATTERNS = [
     re.compile(r"/presentation/d/([a-zA-Z0-9_-]+)"),
     re.compile(r"[?&]id=([a-zA-Z0-9_-]+)"),
@@ -75,7 +79,6 @@ def deck_id_from_url(url_or_id: str) -> str:
             if m := pat.search(url_or_id):
                 return m.group(1)
         raise ValueError(f"Cannot parse deck id from URL: {url_or_id}")
-    # assume it's already an ID (Google uses 44-char IDs but be lenient)
     if re.fullmatch(r"[a-zA-Z0-9_-]+", url_or_id):
         return url_or_id
     raise ValueError(f"Unrecognized deck url or id: {url_or_id}")
@@ -85,12 +88,6 @@ def deck_id_from_url(url_or_id: str) -> str:
 def _slides_service():
     creds = load_credentials()
     return build("slides", "v1", credentials=creds, cache_discovery=False)
-
-
-@cache
-def _drive_service():
-    creds = load_credentials()
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 class SlidesApiError(RuntimeError):
@@ -119,20 +116,13 @@ def get_presentation(deck_id: str, fields: str = DECK_OUTLINE_FIELDS) -> dict[st
 
 
 def get_slide(deck_id: str, slide_id: str) -> dict[str, Any]:
-    """Fetch one slide with full geometry + text + notes fields."""
-    svc = _slides_service()
-    page = _call(svc.presentations().pages().get,
-                 presentationId=deck_id, pageObjectId=slide_id, fields=SLIDE_FULL_FIELDS)
-    return page
-
-
-def batch_update(deck_id: str, requests: list[dict[str, Any]]) -> dict[str, Any]:
-    """Apply a list of Slides API Request objects."""
+    """Fetch one slide with full text + notes fields."""
     svc = _slides_service()
     return _call(
-        svc.presentations().batchUpdate,
+        svc.presentations().pages().get,
         presentationId=deck_id,
-        body={"requests": requests},
+        pageObjectId=slide_id,
+        fields=SLIDE_FULL_FIELDS,
     )
 
 
@@ -142,7 +132,7 @@ def get_thumbnail(
     mime: str = "PNG",
     size: str = "MEDIUM",
 ) -> str:
-    """Return the contentUrl for a rendered slide thumbnail. Valid ~30min."""
+    """Return the contentUrl for a rendered slide thumbnail. URL valid ~30 min."""
     svc = _slides_service()
     resp = _call(
         svc.presentations().pages().getThumbnail,
@@ -159,14 +149,7 @@ def get_thumbnail_bytes(
     slide_id: str,
     size: str = "MEDIUM",
 ) -> bytes:
-    """Fetch rendered thumbnail PNG as raw bytes. Used for MCP ImageContent."""
+    """Fetch rendered thumbnail PNG as raw bytes for MCP ImageContent."""
     url = get_thumbnail(deck_id, slide_id, mime="PNG", size=size)
     with urllib.request.urlopen(url, timeout=30) as resp:
         return resp.read()
-
-
-def copy_deck(deck_id: str, new_title: str) -> str:
-    """Copy a deck via Drive API. Returns new deck ID."""
-    drive = _drive_service()
-    result = _call(drive.files().copy, fileId=deck_id, body={"name": new_title})
-    return result["id"]

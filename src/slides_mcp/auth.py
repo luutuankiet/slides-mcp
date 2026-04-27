@@ -16,9 +16,11 @@ from pathlib import Path
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
+# v2 is read-only — `presentations.readonly` is enough for `presentations.get`,
+# `presentations.pages.get`, and `presentations.pages.getThumbnail`. The v1
+# `drive.file` scope (used by clone_deck) is dropped: v2 has no Drive surface.
 SCOPES = [
-    "https://www.googleapis.com/auth/presentations",
-    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/presentations.readonly",
 ]
 
 

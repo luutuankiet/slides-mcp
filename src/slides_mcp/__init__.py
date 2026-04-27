@@ -1,3 +1,3 @@
-"""slides-mcp — Google Slides MCP server with compact YAML DSL."""
+"""slides-mcp — Google Slides MCP server (v2 read-only)."""
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"
