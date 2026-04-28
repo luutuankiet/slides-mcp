@@ -82,6 +82,12 @@ def _resolve_slide_ids(prez: dict[str, Any], selector: Any) -> list[str]:
         if "last" in selector:
             n = int(selector["last"])
             return all_ids[-n:] if n else []
+        if "hidden" in selector:
+            want = bool(selector["hidden"])
+            return [
+                s["objectId"] for s in all_slides
+                if normalize.is_hidden(s) == want
+            ]
         if selector.get("with_notes"):
             return [
                 s["objectId"]
@@ -127,13 +133,17 @@ def get_deck_outline(deck_url: str) -> dict[str, Any]:
     deck_id = slides_api.deck_id_from_url(deck_url)
     prez = slides_api.get_presentation(deck_id)
     slides_out: list[dict[str, Any]] = []
-    for slide in prez.get("slides", []):
+    for idx, slide in enumerate(prez.get("slides", []), start=1):
         shapes = normalize.normalize_page(slide)
         notes = normalize.extract_notes_text(slide)
         archetype = classify.classify(shapes)
         slides_out.append(
             projection.project(
-                slide["objectId"], shapes, archetype, notes, detail="outline"
+                slide["objectId"], shapes, archetype, notes,
+                detail="outline",
+                position=idx,
+                hidden=normalize.is_hidden(slide),
+                layout_id=normalize.layout_id(slide),
             )
         )
     return {
@@ -187,8 +197,10 @@ def read_slides(
 
     deck_id = slides_api.deck_id_from_url(deck_url)
     prez = slides_api.get_presentation(deck_id)
+    all_slides = prez.get("slides", []) or []
+    deck_positions = {s["objectId"]: i for i, s in enumerate(all_slides, start=1)}
     target_ids = _resolve_slide_ids(prez, slides)
-    by_id = {s["objectId"]: s for s in prez.get("slides", [])}
+    by_id = {s["objectId"]: s for s in all_slides}
 
     out: list[dict[str, Any]] = []
     for sid in target_ids:
@@ -206,6 +218,9 @@ def read_slides(
                 notes,
                 detail=detail,
                 include_images=(include_images == "ref"),
+                position=deck_positions.get(sid),
+                hidden=normalize.is_hidden(slide),
+                layout_id=normalize.layout_id(slide),
             )
         )
 

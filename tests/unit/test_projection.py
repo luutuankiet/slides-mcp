@@ -86,12 +86,13 @@ def test_summary_text_heavy_includes_body():
     assert len(out["body"]) <= 600
 
 
-def test_summary_emits_notes_preview():
+def test_summary_emits_full_notes_no_truncation():
     page = slide_3col_pill_cards()
     shapes, archetype, notes = _setup(page)
     out = project("slide_3col", shapes, archetype, notes, detail="summary")
-    assert "notes_preview" in out
-    assert "last-mile" in out["notes_preview"]
+    assert out["notes"] == "Emphasize the last-mile problem in this section."
+    assert out["notes_chars"] == len(out["notes"])
+    assert "notes_preview" not in out
 
 
 def test_summary_emits_image_count():

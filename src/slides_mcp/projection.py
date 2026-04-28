@@ -1,16 +1,22 @@
-"""Project a normalized slide → token-efficient dict for the agent.
+"""Project a normalized slide \u2192 token-efficient dict for the agent.
 
 Four detail levels, each a strict superset of cost vs the one above:
 
-  outline  — slide_id + title + archetype + element_count + flags    (~20 tok)
-  summary  — outline + joined body text + notes preview               (~80 tok)
-  full     — title + every body string + image refs + tables/charts +
-             full notes                                               (~150 tok)
-  raw      — every shape with geometry + style + runs (debug; faithful  ~400 tok)
+  outline  \u2014 slide_id + title + archetype + counts + flags + position +
+             hidden + layout_id + notes_chars                          (~30 tok)
+  summary  \u2014 outline + body preview (capped) + FULL notes              (~150 tok)
+  full     \u2014 title + every body string (no cap) + image refs +
+             tables/charts + FULL notes                                  (~300 tok)
+  raw      \u2014 full + every leaf shape with geometry + style + runs       (~600 tok)
 
-The goal is to mirror `read_files` philosophy: pick the cheapest mode that
-answers your question, and keep the per-slide schema obvious enough that the
-agent doesn't need a second tool call to interpret the response.
+Notes-as-content workflow: when `include_notes=True`, summary AND full emit
+the FULL notes string. Drafts where the speaker-notes pane carries the actual
+script would be unreadable under the v2.0.0 200-char preview cap.
+
+Draft-state metadata: every mode emits `position` (1-indexed in deck),
+`hidden` (only when True), `layout_id` (only when set), and `notes_chars`.
+These let the agent reason about deck order, find skipped/draft slides, and
+spot stub vs polished notes without round-trips.
 """
 from __future__ import annotations
 
@@ -20,13 +26,12 @@ from .normalize import FlatShape, flatten
 
 Detail = Literal["outline", "summary", "full", "raw"]
 
-# Approximate token budget per slide for each detail level. Informational
-# only — the projection doesn't enforce these. Use for capacity planning.
+# Approximate token budget per slide. Informational only.
 BUDGET_TOK_PER_SLIDE: dict[Detail, int] = {
-    "outline": 20,
-    "summary": 80,
-    "full": 150,
-    "raw": 400,
+    "outline": 30,
+    "summary": 150,
+    "full": 300,
+    "raw": 600,
 }
 
 
@@ -39,9 +44,8 @@ def _run_size(s: FlatShape) -> float:
 def best_title(flat: list[FlatShape]) -> FlatShape | None:
     """Pick the largest visible text on the slide. Tiebreak: width.
 
-    Position-agnostic — it works on covers (title bottom-half), centered
-    layouts, top-banner layouts. The only signal it relies on is the
-    fontSize of the first text run.
+    Position-agnostic \u2014 it works on covers (title bottom-half), centered
+    layouts, top-banner layouts. Only signal: fontSize of the first run.
     """
     candidates = [s for s in flat if s.kind == "text" and s.text]
     if not candidates:
@@ -50,32 +54,56 @@ def best_title(flat: list[FlatShape]) -> FlatShape | None:
 
 
 def _image_ref(s: FlatShape) -> str:
-    """Compact reference for an image element — see render_thumbnail to view."""
     if s.object_id:
         return f"ref://{s.object_id}"
     return "<image_asset>"
 
 
-def _outline(slide_id: str, shapes: list[FlatShape], archetype: str, notes: str) -> dict[str, Any]:
+def _emit_meta(
+    out: dict[str, Any],
+    *,
+    position: int | None,
+    hidden: bool,
+    layout_id: str | None,
+) -> None:
+    """Inject draft-state metadata into a payload dict, in-place.
+
+    `position` is always emitted when provided (cheap; load-bearing for
+    "slide N is broken"-style references). `hidden` is only emitted when
+    True (no information when False; absence implies visible). `layout_id`
+    is only emitted when set on the source slide.
+    """
+    if position is not None:
+        out["position"] = position
+    if hidden:
+        out["hidden"] = True
+    if layout_id:
+        out["layout_id"] = layout_id
+
+
+def _outline(
+    slide_id: str, shapes: list[FlatShape], archetype: str, notes: str,
+    *, position: int | None = None, hidden: bool = False, layout_id: str | None = None,
+) -> dict[str, Any]:
     flat = flatten(shapes)
     title_shape = best_title(flat)
-    return {
+    out: dict[str, Any] = {
         "slide_id": slide_id,
         "title": title_shape.text.strip()[:120] if title_shape and title_shape.text else "",
         "archetype": archetype,
         "element_count": len(flat),
         "has_notes": bool(notes),
+        "notes_chars": len(notes),
         "has_image": any(s.kind == "picture" for s in flat),
     }
+    _emit_meta(out, position=position, hidden=hidden, layout_id=layout_id)
+    return out
 
 
 def _summary(
-    slide_id: str,
-    shapes: list[FlatShape],
-    archetype: str,
-    notes: str,
-    *,
-    include_images: bool = True,
+    slide_id: str, shapes: list[FlatShape], archetype: str, notes: str,
+    *, include_images: bool = True,
+    position: int | None = None, hidden: bool = False, layout_id: str | None = None,
 ) -> dict[str, Any]:
     flat = flatten(shapes)
     title_shape = best_title(flat)
@@ -89,26 +117,31 @@ def _summary(
         "title": title_shape.text.strip()[:200] if title_shape and title_shape.text else "",
         "archetype": archetype,
     }
-    # Cap body — joined preview, not every word
+    _emit_meta(out, position=position, hidden=hidden, layout_id=layout_id)
     if body_lines:
-        joined = " · ".join(line[:140] for line in body_lines[:8])
-        out["body"] = joined[:600]
+        # Raised from v2.0.0's 600-char cap to 1500. Per-line cap raised
+        # 140 \u2192 200. Still distinguishable from full mode (which has no caps),
+        # but actually useful for slides with substantive bodies.
+        joined = " \u00b7 ".join(line[:200] for line in body_lines[:12])
+        out["body"] = joined[:1500]
     if include_images:
         n_pics = sum(1 for s in flat if s.kind == "picture")
         if n_pics:
             out["image_count"] = n_pics
     if notes:
-        out["notes_preview"] = notes.strip()[:200]
+        # Notes-as-content workflow: emit FULL notes, never truncate. Drafts
+        # where the speaker-notes pane carries the actual script would be
+        # unreadable under the v2.0.0 200-char preview cap. User constraint
+        # (LOG-031): "the stake is high \u2014 maximum verbosity please."
+        out["notes"] = notes.strip()
+        out["notes_chars"] = len(notes)
     return out
 
 
 def _full(
-    slide_id: str,
-    shapes: list[FlatShape],
-    archetype: str,
-    notes: str,
-    *,
-    include_images: bool = True,
+    slide_id: str, shapes: list[FlatShape], archetype: str, notes: str,
+    *, include_images: bool = True,
+    position: int | None = None, hidden: bool = False, layout_id: str | None = None,
 ) -> dict[str, Any]:
     flat = flatten(shapes)
     title_shape = best_title(flat)
@@ -116,6 +149,7 @@ def _full(
         "slide_id": slide_id,
         "archetype": archetype,
     }
+    _emit_meta(out, position=position, hidden=hidden, layout_id=layout_id)
     if title_shape and title_shape.text:
         out["title"] = title_shape.text.strip()
 
@@ -124,6 +158,7 @@ def _full(
         if s.kind == "text" and s.text and s is not title_shape:
             t = s.text.strip()
             if t:
+                # No truncation. Full mode = full content.
                 body.append(t)
     if body:
         out["body"] = body
@@ -142,10 +177,14 @@ def _full(
 
     if notes:
         out["notes"] = notes.strip()
+        out["notes_chars"] = len(notes)
     return out
 
 
-def _raw(slide_id: str, shapes: list[FlatShape], archetype: str, notes: str) -> dict[str, Any]:
+def _raw(
+    slide_id: str, shapes: list[FlatShape], archetype: str, notes: str,
+    *, position: int | None = None, hidden: bool = False, layout_id: str | None = None,
+) -> dict[str, Any]:
     """Faithful: every leaf shape with geometry + style + runs. Token-heavy."""
     elements: list[dict[str, Any]] = []
     for s in flatten(shapes):
@@ -189,8 +228,10 @@ def _raw(slide_id: str, shapes: list[FlatShape], archetype: str, notes: str) -> 
         "archetype": archetype,
         "elements": elements,
     }
+    _emit_meta(out, position=position, hidden=hidden, layout_id=layout_id)
     if notes:
         out["notes"] = notes.strip()
+        out["notes_chars"] = len(notes)
     return out
 
 
@@ -202,17 +243,25 @@ def project(
     *,
     detail: Detail = "summary",
     include_images: bool = True,
+    position: int | None = None,
+    hidden: bool = False,
+    layout_id: str | None = None,
 ) -> dict[str, Any]:
-    """Single dispatcher — agent-friendly entry point.
+    """Single dispatcher \u2014 agent-friendly entry point.
 
     See module docstring for detail-level semantics + token budgets.
+
+    `position`, `hidden`, `layout_id` are draft-state metadata threaded by
+    the server from the underlying slide page object. They surface in every
+    detail mode \u2014 cheap to emit, load-bearing for deck-review workflows.
     """
+    extras = {"position": position, "hidden": hidden, "layout_id": layout_id}
     if detail == "outline":
-        return _outline(slide_id, shapes, archetype, notes)
+        return _outline(slide_id, shapes, archetype, notes, **extras)
     if detail == "summary":
-        return _summary(slide_id, shapes, archetype, notes, include_images=include_images)
+        return _summary(slide_id, shapes, archetype, notes, include_images=include_images, **extras)
     if detail == "full":
-        return _full(slide_id, shapes, archetype, notes, include_images=include_images)
+        return _full(slide_id, shapes, archetype, notes, include_images=include_images, **extras)
     if detail == "raw":
-        return _raw(slide_id, shapes, archetype, notes)
+        return _raw(slide_id, shapes, archetype, notes, **extras)
     raise ValueError(f"detail must be outline|summary|full|raw; got {detail!r}")

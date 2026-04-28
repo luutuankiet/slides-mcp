@@ -270,3 +270,21 @@ def extract_notes(slide: dict[str, Any]) -> tuple[str, str | None]:
 def extract_notes_text(slide: dict[str, Any]) -> str:
     """Back-compat wrapper: returns only the text."""
     return extract_notes(slide)[0]
+
+
+def is_hidden(slide: dict[str, Any]) -> bool:
+    """True when the slide has `slideProperties.isSkipped: true`.
+
+    Hidden slides include backups, drafts, and the v0.x meta-slide marker.
+    Not surfaced by Google Slides UI presentations but real metadata.
+    """
+    return bool((slide.get("slideProperties") or {}).get("isSkipped"))
+
+
+def layout_id(slide: dict[str, Any]) -> str | None:
+    """Return `slideProperties.layoutObjectId` if present.
+
+    Useful for finding all slides that use a given template/layout in a deck
+    review (e.g. "every slide on the deprecated dark-cover layout").
+    """
+    return (slide.get("slideProperties") or {}).get("layoutObjectId")

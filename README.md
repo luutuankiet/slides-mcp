@@ -30,10 +30,14 @@ If you depended on the v0.x write tools: pin them — `uvx slides-mcp@0.11.0`.
 
 | Mode | Per-slide tok | Returns |
 |------|--------------|---------|
-| `outline` | ~20 | title + archetype + element_count + has_notes/has_image flags |
-| `summary` | ~80 | title + joined body preview + image_count + notes preview |
-| `full` | ~150 | title + every body string + image refs + table/chart counts + full notes |
-| `raw` | ~400 | every leaf shape with geometry + style + runs (debug only) |
+| `outline` | ~30 | title + archetype + element_count + has_notes/has_image flags + position + hidden + layout_id + notes_chars |
+| `summary` | ~150 | title + joined body (cap 1500) + image_count + **full notes (no truncation)** + notes_chars + position/hidden/layout_id |
+| `full` | ~300 | title + every body string (no cap) + image refs + table/chart counts + **full notes** + position/hidden/layout_id |
+| `raw` | ~600 | every leaf shape with geometry + style + runs + full notes (debug; faithful) |
+
+**Notes are content, not metadata.** Speaker notes are emitted verbatim in `summary`/`full`/`raw` so agents can read drafts where the narrative lives in notes (common case for working decks). The token budget reflects this — pay it; it's the difference between "reading the deck" and "reading the slide chrome".
+
+**Hidden slides** (`slideProperties.isSkipped`) are flagged via `hidden: true` on every mode. Position is 1-indexed deck order. `layout_id` carries the source layout's `objectId` for grouping by template.
 
 ## Slide selectors
 
@@ -49,6 +53,8 @@ slides={"first":5}       # head
 slides={"last":3}        # tail
 slides={"with_notes":true}
 slides={"with_image":true}
+slides={"hidden":true}    # only skipped slides
+slides={"hidden":false}   # only visible slides
 ```
 
 ## Workflow
@@ -101,9 +107,11 @@ uvx slides-mcp@latest
 ## Auth setup (one-time)
 
 1. On a machine with a browser, drop a Google Cloud OAuth client JSON at `~/.config/slides-mcp/client_secret.json`. Configure the OAuth consent screen with scope `https://www.googleapis.com/auth/presentations.readonly` (v2 is strict read-only — no Drive scope, no write scope).
-2. Run `slides-mcp-auth` and complete the consent flow.
-3. Token lands at `~/.config/slides-mcp/token.json`.
+2. Run `slides-mcp-auth --client-secret ~/.config/slides-mcp/client_secret.json --out ~/.config/slides-mcp/token.json` and complete the consent flow.
+3. Token lands at the canonical `~/.config/slides-mcp/token.json` path.
 4. Copy the token to your headless host if running there: `scp ~/.config/slides-mcp/token.json host:~/.config/slides-mcp/`.
+
+> ⚠️ **Don't use `--out ./token.json`.** That writes to your CWD, not the canonical path the server reads from. The server falls back to `~/.config/slides-mcp/token.json` (or `SLIDES_MCP_TOKEN_PATH` if set) — a token in your project directory will be silently ignored on next start. Always pass an absolute path.
 
 The server reads `SLIDES_MCP_TOKEN_PATH` env if set, otherwise falls back to the default location.
 
@@ -148,7 +156,34 @@ Don't pull `full` on every slide. Start with outline, drill into the 5–10 slid
 
 ## Status
 
-v2.0.0 — released April 2026. Breaking change: all write tools removed. v0.11 → v2.0.
+v2.0.1 — released April 2026. Patch over v2.0.0: OAuth refresh `invalid_scope` fix + slide metadata expansion (position, hidden, layout_id, notes_chars) + notes-verbosity (full notes verbatim in summary/full/raw, no truncation). Breaking surface still v2.0.0: all write tools removed.
+
+## Troubleshooting
+
+### `invalid_scope: Bad Request` on first tool call
+
+**Symptom:** any tool call (except `auth_status`) errors with:
+```
+('invalid_scope: Bad Request', {'error': 'invalid_scope', 'error_description': 'Bad Request'})
+```
+
+**Cause:** v2.0.0 had a bug where token-refresh forced the narrow `presentations.readonly` scope onto the credential, which Google rejects when the token was minted under a different (broader) grant. Fixed in v2.0.1.
+
+**Fix:** upgrade to v2.0.1 (`uvx slides-mcp@latest`). No re-auth needed; existing tokens keep working.
+
+### Server says "no token at `~/.config/slides-mcp/token.json`"
+
+You likely ran `slides-mcp-auth --out ./token.json` and the file landed in your project CWD. Move it to the canonical path:
+```bash
+mkdir -p ~/.config/slides-mcp
+mv ./token.json ~/.config/slides-mcp/token.json
+chmod 600 ~/.config/slides-mcp/token.json
+```
+Or set `SLIDES_MCP_TOKEN_PATH` to wherever it actually lives.
+
+### Notes are huge — can I cap them?
+
+No, by design. v2.0.1 emits full notes verbatim in `summary`/`full`/`raw` because notes are where the deck's narrative lives in working drafts. If you need to bound cost, narrow the `slides` selector (range, `with_notes`, `hidden:false`) instead of trimming each slide. `outline` mode skips note bodies entirely (only `notes_chars`).
 
 ## License
 

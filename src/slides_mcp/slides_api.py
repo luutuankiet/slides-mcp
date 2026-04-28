@@ -29,6 +29,8 @@ from .auth import load_credentials
 DECK_OUTLINE_FIELDS = (
     "presentationId,title,revisionId,"
     "slides.objectId,"
+    "slides.slideProperties.isSkipped,"
+    "slides.slideProperties.layoutObjectId,"
     "slides.slideProperties.notesPage.pageElements("
     "objectId,shape.placeholder,shape.text.textElements.textRun.content"
     "),"
@@ -47,6 +49,8 @@ DECK_OUTLINE_FIELDS = (
 
 SLIDE_FULL_FIELDS = (
     "objectId,"
+    "slideProperties.isSkipped,"
+    "slideProperties.layoutObjectId,"
     "slideProperties.notesPage.pageElements("
     "objectId,shape.placeholder,shape.text.textElements.textRun.content"
     "),"

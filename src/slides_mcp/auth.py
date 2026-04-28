@@ -32,7 +32,16 @@ def token_path() -> Path:
 
 
 def load_credentials() -> Credentials:
-    """Load + refresh credentials from token.json. Raises if missing or unrefreshable."""
+    """Load + refresh credentials from token.json. Raises if missing or unrefreshable.
+
+    Loads with the scopes saved in the token file rather than forcing v2's
+    SCOPES list — Google's refresh endpoint rejects with `invalid_scope` if
+    we ask to refresh under a scope set that differs from what was granted
+    at consent. v2's SCOPES (`presentations.readonly`) is for FRESH consent
+    only via `slides-mcp-auth`; existing v0.x tokens (`presentations` +
+    `drive.file`) keep working untouched. v2 tools never make write calls,
+    so a broader granted scope is harmless — capability ≠ usage.
+    """
     path = token_path()
     if not path.exists():
         raise FileNotFoundError(
@@ -40,7 +49,9 @@ def load_credentials() -> Credentials:
             "Run `slides-mcp-auth` on a host with a browser, then copy the file here. "
             "See README 'Auth setup'."
         )
-    creds = Credentials.from_authorized_user_file(str(path), SCOPES)
+    # scopes=None → use whatever is saved in the JSON. Prevents the
+    # `invalid_scope` refresh error when SCOPES tightens between versions.
+    creds = Credentials.from_authorized_user_file(str(path))
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
         path.write_text(creds.to_json())

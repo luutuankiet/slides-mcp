@@ -102,23 +102,34 @@ def vline(obj_id: str, left: float, top: float, height: float) -> dict[str, Any]
     }
 
 
-def page(object_id: str, elements: list[dict[str, Any]], notes_text: str = "") -> dict[str, Any]:
+def page(
+    object_id: str,
+    elements: list[dict[str, Any]],
+    notes_text: str = "",
+    is_skipped: bool = False,
+    layout_object_id: str | None = None,
+) -> dict[str, Any]:
     p: dict[str, Any] = {"objectId": object_id, "pageElements": elements}
+    sp: dict[str, Any] = {}
+    if is_skipped:
+        sp["isSkipped"] = True
+    if layout_object_id:
+        sp["layoutObjectId"] = layout_object_id
     if notes_text:
-        p["slideProperties"] = {
-            "notesPage": {
-                "pageElements": [{
-                    "objectId": f"{object_id}_notes",
-                    "size": size(10, 4),
-                    "transform": transform(0, 0),
-                    "shape": {
-                        "shapeType": "TEXT_BOX",
-                        "placeholder": {"type": "BODY"},
-                        "text": {"textElements": [text_element(notes_text)]},
-                    },
-                }]
-            }
+        sp["notesPage"] = {
+            "pageElements": [{
+                "objectId": f"{object_id}_notes",
+                "size": size(10, 4),
+                "transform": transform(0, 0),
+                "shape": {
+                    "shapeType": "TEXT_BOX",
+                    "placeholder": {"type": "BODY"},
+                    "text": {"textElements": [text_element(notes_text)]},
+                },
+            }]
         }
+    if sp:
+        p["slideProperties"] = sp
     return p
 
 
