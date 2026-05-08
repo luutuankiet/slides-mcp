@@ -1,13 +1,14 @@
-"""Google Slides REST wrapper — read-only surface (v2).
+"""Google Slides REST wrapper — read surface + curated write (v2.1).
 
-Public surface mirrors what the v2 MCP tool layer needs:
+Public surface mirrors what the MCP tool layer needs:
   - deck_id_from_url(url)          → parsed ID
   - get_presentation(deck_id)      → whole presentation w/ minimal FieldMask
   - get_slide(deck_id, slide_id)   → one slide + its notes
   - get_thumbnail(deck_id, ...)    → thumbnail PNG URL
   - get_thumbnail_bytes(...)       → thumbnail PNG bytes
+  - batch_update(deck_id, requests) → raw Slides API batchUpdate (v2.1)
 
-v1 batch_update + copy_deck were dropped along with the write surface.
+v1's `copy_deck` (Drive scope) stays dropped — v2.1 doesn't restore deck cloning.
 All calls use a cached googleapiclient service built from token.json.
 """
 from __future__ import annotations
@@ -157,3 +158,36 @@ def get_thumbnail_bytes(
     url = get_thumbnail(deck_id, slide_id, mime="PNG", size=size)
     with urllib.request.urlopen(url, timeout=30) as resp:
         return resp.read()
+
+
+def batch_update(deck_id: str, requests: list[dict]) -> dict:
+    """Apply a list of Slides API Requests to the deck (v2.1 write surface).
+
+    Returns the raw `BatchUpdatePresentationResponse`:
+      {presentationId, replies[], writeControl}
+    where `replies` is positionally aligned 1:1 with `requests` and contains
+    server-generated identifiers for `createShape`, `createSlide`,
+    `duplicateObject`, etc. Empty dict for no-op replies.
+
+    This is a THIN REST wrapper. Caller (server.py `exec_batch_update`) owns:
+      - dry-run preview
+      - destructive-kind allowlist (`deleteObject`, `replaceAllText`, etc.)
+      - post-state re-read + projection (the v2.1 differentiator)
+      - OAuth scope error mapping (403 → actionable re-consent message)
+
+    Args:
+      deck_id: Slides deck ID (use `deck_id_from_url` to parse a URL).
+      requests: Ordered list of Slides API Request dicts. Each must match the
+                Slides API Request schema (one top-level kind per dict, e.g.
+                {"createShape": {...}}, {"replaceAllText": {...}}).
+
+    Raises:
+      SlidesApiError: wraps any HttpError from the Slides API. The wrapped
+                      error includes status + reason for caller mapping.
+    """
+    svc = _slides_service()
+    return _call(
+        svc.presentations().batchUpdate,
+        presentationId=deck_id,
+        body={"requests": requests},
+    )

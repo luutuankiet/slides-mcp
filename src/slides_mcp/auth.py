@@ -20,7 +20,8 @@ from google.oauth2.credentials import Credentials
 # `presentations.pages.get`, and `presentations.pages.getThumbnail`. The v1
 # `drive.file` scope (used by clone_deck) is dropped: v2 has no Drive surface.
 SCOPES = [
-    "https://www.googleapis.com/auth/presentations.readonly",
+    "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/drive.readonly", 
 ]
 
 
