@@ -21,7 +21,7 @@ from google.oauth2.credentials import Credentials
 # `drive.file` scope (used by clone_deck) is dropped: v2 has no Drive surface.
 SCOPES = [
     "https://www.googleapis.com/auth/presentations",
-    "https://www.googleapis.com/auth/drive.readonly", 
+    "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 
