@@ -83,7 +83,7 @@ Write tools accept that pixel-perfect alignment is impossible without visual fee
 
 ### Composing requests
 
-For `exec_batch_update`, the agent writes Slides API Request dicts directly. See **[`docs/slides-api-cookbook.md`](docs/slides-api-cookbook.md)** for:
+For `exec_batch_update`, the agent writes Slides API Request dicts directly. See **[`skills/slides-mcp/SKILL.md`](skills/slides-mcp/SKILL.md)** for:
 
 - Common Request kinds (createShape / replaceAllText / updateTextStyle / updatePageElementTransform / deleteObject)
 - objectId discovery flow (`get_deck_outline` → use slide_ids in requests; `read_slides(detail="raw")` → element ids)

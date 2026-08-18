@@ -1,0 +1,9 @@
+{
+  "name": "slides-mcp",
+  "description": "Compose exec_batch_update requests for the slides-mcp Google Slides MCP server: Request kinds, objectId discovery, the EMU cheat sheet, the autofit:NONE invariant, and worked examples.",
+  "author": {
+    "name": "luutuankiet",
+    "url": "https://github.com/luutuankiet"
+  },
+  "skills": ["./skills/slides-mcp"]
+}

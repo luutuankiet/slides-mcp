@@ -1,3 +1,7 @@
+---
+name: slides-mcp
+description: Reference of code execution patterns from the google slides mcp server. Skip this skill if not using slides code executions `exec_batch_update` tool
+---
 # Composing exec_batch_update requests
 
 A reference for using `exec_batch_update` to make legwork-shaped edits to Google Slides via slides-mcp. The agent writes Slides API Request dicts directly — this doc is the cheat sheet.
@@ -178,4 +182,4 @@ exec_batch_update(deck_url, requests, post_state="outline")
 ## Reference
 
 - Slides API Request reference: <https://developers.google.com/slides/api/reference/rest/v1/presentations/request>
-- slides-mcp v2.1.0 release notes: `releases/v2.1.0.md`
+- slides-mcp v2.1.0 release notes: [`releases/v2.1.0.md`](../../releases/v2.1.0.md)
