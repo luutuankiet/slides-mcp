@@ -16,9 +16,10 @@ something is implemented.
 | page | covers | verified |
 |---|---|---|
 | [Auth and entry points](architecture/auth-and-entry-points.md) | where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup | 2026-09-28 |
+| [Deck scripts (run_deck_script)](architecture/deck-scripts.md) | how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, what is refused before any API call, where errors and warnings come from | 2026-09-28 |
 | [Packaging, release and the shipped skill](architecture/packaging-and-release.md) | how a version gets to PyPI and GitHub Releases, what the release workflow checks, where the agent skill that ships with the package lives | 2026-09-28 |
 | [Read path (outline, read, search, thumbnail)](architecture/read-path.md) | how a deck URL becomes the slide dicts an agent sees, where detail modes, selectors, archetypes, titles and speaker notes come from | 2026-09-28 |
-| [Write wedge (exec_batch_update, add_section_footers)](architecture/write-wedge.md) | where writes to a deck happen, the destructive-request guard, dry run, how post_state and affected_slide_ids are built, how section footers are placed | 2026-09-28 |
+| [Write wedge (exec_batch_update, add_section_footers, write_speaker_notes)](architecture/write-wedge.md) | where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, how section footers are placed, how Markdown notes become requests | 2026-09-28 |
 
 ## Traps
 
@@ -44,5 +45,6 @@ it with a new one rather than editing it.
 - [Cut the slide-authoring surface and make v2 a reader](adr/0001-read-only-refactor.md)
 - [Bring writes back as a raw passthrough for legwork, with post-state in the reply](adr/0002-legwork-write-wedge.md)
 - [Keep repository knowledge in docs/, loaded on demand](adr/0003-agent-docs-layout.md)
+- [Run agent scripts in embedded V8, in a worker process per call](adr/0004-deck-scripts-in-embedded-v8.md)
 
 <!-- END GENERATED INDEX -->

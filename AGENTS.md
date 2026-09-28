@@ -4,7 +4,8 @@ An MCP server that lets an agent read Google Slides decks as context: outline a
 deck, read slides at four detail levels, search them, render one as a PNG. Since
 v2.1 it also has a narrow write wedge: a raw `batchUpdate` passthrough and a
 section-footer tool, both returning the post-write deck state in the same
-response. Published to PyPI and run by MCP clients over stdio with `uvx`.
+response. v2.2 adds Markdown speaker notes and `run_deck_script`, which runs
+agent JavaScript against the deck in a sandboxed V8 worker process. Published to PyPI and run by MCP clients over stdio with `uvx`.
 
 ## Hard constraints
 
@@ -13,14 +14,21 @@ response. Published to PyPI and run by MCP clients over stdio with `uvx`.
   behaviour. Keep them true.
 - **Writes are legwork, not authorship.** Full slide authoring was cut in
   v2.0.0; don't add creative-layout tools (see `docs/adr/`).
-- **Every write goes through `exec_batch_update`.** Destructive request kinds
-  need `confirm_destructive=True`; convenience tools build requests and delegate.
+- **Every write goes through `writes.apply_batch`.** Destructive request kinds
+  need `confirm_destructive=True`; convenience tools build requests and delegate
+  to `exec_batch_update`, and deck scripts send each phase through the same
+  function.
 - **Never commit credentials.** `token.json` and client secrets are gitignored.
 
 ## Layout
 
 ```
-src/slides_mcp/server.py      — all 7 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/server.py      — all 9 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/writes.py      — the one write path: apply_batch, destructive kinds, audit line
+src/slides_mcp/scripting.py   — run_deck_script runtime: limits, worker handle, phases, warnings
+src/slides_mcp/sandbox/       — V8 worker process and the JS prelude scripts see
+src/slides_mcp/deck_model.py  — the deck snapshot scripts read
+src/slides_mcp/notes_md.py    — Markdown to speaker-notes requests and back
 src/slides_mcp/slides_api.py  — Slides REST wrapper, field masks, deck-id parsing
 src/slides_mcp/normalize.py   — Slides API pageElement JSON → FlatShape
 src/slides_mcp/classify.py    — topology-based archetype label per slide
@@ -31,6 +39,7 @@ skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate req
 .claude-plugin/plugin.json    — plugin manifest that ships that skill
 releases/vX.Y.Z.md            — hand-written release notes, required per tag
 tests/unit/                   — pytest, no network
+tests/fake_api.py             — fake Slides API over a scrubbed deck recording
 ```
 
 ## Commands

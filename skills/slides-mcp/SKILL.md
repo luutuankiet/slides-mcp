@@ -1,12 +1,56 @@
 ---
 name: slides-mcp
-description: Reference of code execution patterns from the google slides mcp server. Skip this skill if not using slides code executions `exec_batch_update` tool
+description: Editing Google Slides through the slides-mcp server - when to use run_deck_script (edits that depend on deck data), write_speaker_notes, or raw exec_batch_update requests, plus the Request cheat sheet. Skip this skill if you are only reading decks.
 ---
 # Composing exec_batch_update requests
 
 A reference for using `exec_batch_update` to make legwork-shaped edits to Google Slides via slides-mcp. The agent writes Slides API Request dicts directly — this doc is the cheat sheet.
 
 > ⚠️ Per v2.1 mandate: this tool is for **legwork** (bulk text edits, footers, global formatting). It accepts that pixel-perfect layout is impossible without visual feedback. If you need creative authorship, the answer is the human in the Slides UI.
+
+## Pick the tool first
+
+| The edit | Use |
+|---|---|
+| Depends on what is in the deck: re-theme dark slides, swap a palette, restyle every title, resize every box of one kind, write notes from data | `run_deck_script` |
+| Speaker notes, with formatting | `write_speaker_notes` (Markdown in, real bold/italic/headers/bullets out) |
+| A handful of requests whose ids you already know | `exec_batch_update` |
+| A footer on every slide | `add_section_footers` |
+
+**Prefer `run_deck_script` whenever you would otherwise read the deck, compute
+requests in your head and paste them back.** The script reads the deck inside
+the server, so the deck never enters your context, and the geometry, fills,
+theme colours and font weights it sees are already resolved (rotation and
+groups applied, theme colours turned into hex, a transparent box reported as
+`fill.kind == "none"` rather than white).
+
+```js
+// input: {"map": {"#1A73E8": "#0B8043"}}
+let n = 0;
+for (const slide of deck.slides) {
+  for (const el of slide.elements) {
+    const to = el.fill && input.map[el.fill.hex];
+    if (to) { emit(setFill(el, to, el.fill.alpha)); n++; }
+    for (const r of el.runs || []) {
+      if (input.map[r.color]) { emit(styleText(el, {color: input.map[r.color]}, r)); n++; }
+    }
+  }
+}
+return {queued: n};
+```
+
+- `dry_run` is **true by default**. Read the per-slide preview (kinds, colours
+  and fonts before and after), then call again with `dry_run=false`.
+- Pass data through `input`, never by splicing it into the script string.
+- `await commit()` only when a later step needs to see what an earlier one
+  created; each phase is one atomic batch.
+- `render_slides="1-3"` on a real apply returns thumbnails so you can check
+  the result by eye.
+- Read the `warnings`: a font change that drops a weight, or text that will
+  likely overflow a fixed-size box.
+
+The rest of this page is the Request reference, which you need for
+`emit()` inside a script as much as for `exec_batch_update`.
 
 ## Quick reference
 
