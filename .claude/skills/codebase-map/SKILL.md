@@ -27,6 +27,14 @@ something is implemented.
 | [Read path (outline, read, search, thumbnail)](../../../docs/architecture/read-path.md) | how a deck URL becomes the slide dicts an agent sees, where detail modes, selectors, archetypes, titles and speaker notes come from | 2026-09-28 |
 | [Write wedge (exec_batch_update, add_section_footers, write_speaker_notes)](../../../docs/architecture/write-wedge.md) | where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, how section footers are placed, how Markdown notes become requests | 2026-09-28 |
 
+## Guides
+
+Long-form pages that belong to no single area.
+
+| page | summary | verified |
+|---|---|---|
+| [Deploying the shared server to Cloud Run (draft)](../../../docs/deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server, with the Firestore database, service account access and settings it needs; draft until HTTP mode ships | 2026-09-28 |
+
 <!-- END GENERATED INDEX -->
 
 The same table, browsable, is [docs/README.md](../../../docs/README.md).

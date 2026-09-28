@@ -38,6 +38,14 @@ Simply true, and expensive to re-derive.
 | [Cutting a release](reference/cutting-a-release.md) | the ordered steps that get a version onto GitHub Releases and PyPI without the tag-triggered workflow failing | 2026-09-28 |
 | [Google's Slides MCP server compared with slides-mcp](reference/google-slides-mcp.md) | what Google's hosted Slides MCP server (Developer Preview) offers, measured token cost and write guards side by side with slides-mcp, and how to repeat the measurements | 2026-09-28 |
 
+## Guides
+
+Long-form pages that belong to no single area.
+
+| page | summary | verified |
+|---|---|---|
+| [Deploying the shared server to Cloud Run (draft)](deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server, with the Firestore database, service account access and settings it needs; draft until HTTP mode ships | 2026-09-28 |
+
 ## Decisions
 
 Why the repo is the way it is. A merged decision is immutable -- supersede
