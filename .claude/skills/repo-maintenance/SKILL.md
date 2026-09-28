@@ -40,6 +40,7 @@ it with a new one rather than editing it.
 - [Bring writes back as a raw passthrough for legwork, with post-state in the reply](../../../docs/adr/0002-legwork-write-wedge.md)
 - [Keep repository knowledge in docs/, loaded on demand](../../../docs/adr/0003-agent-docs-layout.md)
 - [Run agent scripts in embedded V8, in a worker process per call](../../../docs/adr/0004-deck-scripts-in-embedded-v8.md)
+- [Deliver the agent skill through an MCP tool](../../../docs/adr/0005-skill-delivery-through-mcp-tool.md)
 
 <!-- END GENERATED INDEX -->
 

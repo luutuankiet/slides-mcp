@@ -1,6 +1,6 @@
 # slides-mcp v2
 
-A minimal MCP server for Google Slides as agent context. **5 read primitives + 4 write tools** for agent legwork: a raw `batchUpdate` passthrough, section footers, Markdown speaker notes, and `run_deck_script` for edits that depend on what is in the deck. Token-efficient, mirrors `read_files` philosophy.
+A minimal MCP server for Google Slides as agent context. **5 read primitives + 4 write tools + `install_skill`** for agent legwork: a raw `batchUpdate` passthrough, section footers, Markdown speaker notes, and `run_deck_script` for edits that depend on what is in the deck. Token-efficient, mirrors `read_files` philosophy.
 
 ## What this is
 
@@ -33,6 +33,7 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 | `add_section_footers(deck_url, sections, template?, ...)` | **(v2.1)** Add chapter/section footer to every slide; idempotent re-runs |
 | `write_speaker_notes(deck_url, notes, mode?, dry_run?, confirm_destructive?)` | **(v2.2)** Speaker notes from Markdown for many slides in one batch; real bold, italic, headers and bullets |
 | `run_deck_script(deck_url, script, input?, dry_run?, ...)` | **(v2.2)** Run JavaScript against the deck in a sandbox: read, compute and edit in one call |
+| `install_skill()` | **(v2.3)** Returns the shipped agent skill (every file plus install steps) so the agent can install it for the user. No deck, no Google sign-in |
 
 ## Detail modes
 
@@ -92,6 +93,15 @@ For `exec_batch_update`, the agent writes Slides API Request dicts directly. See
 - EMU cheat sheet (1 in = 914400 EMU; 16:9 deck = 9144000 × 5143500)
 - The `autofit:NONE` invariant for shapes with text
 - Worked examples (rename a deck, add timestamps, change global font)
+
+### Installing the skill
+
+Ask your agent to "install the slides-mcp skill". It calls `install_skill`, which returns the skill files that match the server version, a table of where Claude Code, Codex CLI and Gemini CLI keep skills, and steps to follow. The agent asks whether to install for your user account or the current project, replaces any old copy and writes the files. Ask again after upgrading the server to update it.
+
+For a team that only gets an endpoint URL:
+
+1. Add the slides-mcp endpoint to your agent and complete the sign-in.
+2. Ask your agent: "install the slides-mcp skill".
 
 ### OAuth scope
 

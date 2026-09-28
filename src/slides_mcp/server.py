@@ -22,7 +22,17 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 
-from . import auth, classify, normalize, notes_md, projection, scripting, slides_api, writes
+from . import (
+    auth,
+    classify,
+    normalize,
+    notes_md,
+    projection,
+    scripting,
+    skill_bundle,
+    slides_api,
+    writes,
+)
 from .writes import DESTRUCTIVE_KINDS
 
 mcp = FastMCP("slides-mcp")
@@ -165,6 +175,17 @@ def _slide_shapes(ctx: normalize.DeckContext, slide: dict[str, Any]) -> list[nor
 def auth_status() -> dict[str, Any]:
     """Diagnostic: report token.json state without exposing secrets."""
     return auth.credentials_info()
+
+
+@mcp.tool()
+def install_skill() -> dict[str, Any]:
+    """Return the slides-mcp agent skill (every file, with its path) plus install steps.
+
+    Call this when the user asks to install, set up or update the slides-mcp
+    skill. Needs no deck and no Google sign-in. Follow the `instructions` in
+    the response.
+    """
+    return skill_bundle.bundle()
 
 
 @mcp.tool()

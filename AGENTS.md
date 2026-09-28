@@ -23,11 +23,12 @@ agent JavaScript against the deck in a sandboxed V8 worker process. Published to
 ## Layout
 
 ```
-src/slides_mcp/server.py      — all 9 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/server.py      — all 10 MCP tools, slide selectors, write guard, post-state
 src/slides_mcp/writes.py      — the one write path: apply_batch, destructive kinds, audit line
 src/slides_mcp/scripting.py   — run_deck_script runtime: limits, worker handle, phases, warnings
 src/slides_mcp/sandbox/       — V8 worker process and the JS prelude scripts see
 src/slides_mcp/deck_model.py  — the deck snapshot scripts read
+src/slides_mcp/skill_bundle.py — finds the shipped skill (wheel copy or checkout) for install_skill
 src/slides_mcp/notes_md.py    — Markdown to speaker-notes requests and back
 src/slides_mcp/slides_api.py  — Slides REST wrapper, field masks, deck-id parsing
 src/slides_mcp/normalize.py   — Slides API pageElement JSON → FlatShape
@@ -35,7 +36,8 @@ src/slides_mcp/classify.py    — topology-based archetype label per slide
 src/slides_mcp/projection.py  — FlatShape → outline / summary / full / raw dicts
 src/slides_mcp/auth.py        — token.json load and refresh
 src/slides_mcp/bootstrap.py   — `slides-mcp-auth` OAuth consent; cli.py is the entry point
-skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate requests
+skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate requests; the wheel
+                                bundles it as slides_mcp/_skills_data/ for install_skill
 .claude-plugin/plugin.json    — plugin manifest that ships that skill
 releases/vX.Y.Z.md            — hand-written release notes, required per tag
 tests/unit/                   — pytest, no network

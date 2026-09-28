@@ -1227,7 +1227,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.34" },
     { name = "google-auth-httplib2", specifier = ">=0.2" },
     { name = "google-auth-oauthlib", specifier = ">=1.2" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.2.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.2.0,<2" },
     { name = "mini-racer", specifier = ">=0.14.1" },
 ]
 

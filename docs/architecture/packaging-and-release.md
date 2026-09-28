@@ -45,3 +45,14 @@ people working on this repository.
 
 Tool docstrings in `server.py` remain the primary reference for the read
 tools; the skill only covers composing write requests.
+
+The wheel carries a copy of that folder at `slides_mcp/_skills_data/slides-mcp/`
+through a hatch `force-include` in `pyproject.toml`; the repo folder is not
+moved. The `install_skill` tool (`skill_bundle.py`) reads the bundled copy
+first and falls back to the repo folder, so a source checkout needs no build.
+It returns every file under the folder, so adding pages needs no code change.
+`tests/unit/test_install_skill.py` builds a wheel and fails if the copy is
+missing.
+
+`mcp` is capped below 2: `uvx` installs ignore `uv.lock`, and mcp 2.x removed
+`FastMCP`, so an uncapped fresh install cannot start the server.
