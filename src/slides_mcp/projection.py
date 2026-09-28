@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .normalize import FlatShape, flatten
+from .normalize import FlatShape, flatten, utf16_len
 
 Detail = Literal["outline", "summary", "full", "raw"]
 
@@ -203,6 +203,19 @@ def _raw(
             e["outline_hex"] = s.outline_hex
         if s.image_url:
             e["image_url"] = s.image_url
+        # 2.2 read-model keys, emitted only when they differ from the default
+        # so raw stays inside its token budget.
+        for key, rec in (("fill", s.fill), ("outline", s.outline)):
+            if rec and rec.get("kind") not in (None, "none") and (
+                rec.get("kind") != "solid" or rec.get("alpha", 1.0) != 1.0 or rec.get("theme")
+            ):
+                e[key] = rec
+        if s.autofit and s.autofit != "NONE":
+            e["autofit"] = s.autofit
+        if s.rotation_deg:
+            e["rotation_deg"] = s.rotation_deg
+        if s.parent_id:
+            e["parent_id"] = s.parent_id
         if s.runs:
             runs_info: list[dict[str, Any]] = []
             for r in s.runs:
@@ -217,6 +230,15 @@ def _raw(
                     ri["italic"] = True
                 if r.color_hex:
                     ri["color_hex"] = r.color_hex
+                if r.color_theme:
+                    ri["color_theme"] = r.color_theme
+                if r.weight and r.weight not in (400, 700 if r.bold else 400):
+                    ri["weight"] = r.weight
+                if utf16_len(r.content) != len(r.content) or r.start != sum(
+                    len(x.content) for x in s.runs[: s.runs.index(r)]
+                ):
+                    # UTF-16 indices differ from character offsets here
+                    ri["start"], ri["end"] = r.start, r.end
                 runs_info.append(ri)
             e["runs"] = runs_info
         if s.has_rotation:

@@ -14,13 +14,16 @@ See README and skills/slides-mcp/SKILL.md for usage patterns.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 
-from . import auth, classify, normalize, projection, slides_api
+from . import auth, classify, normalize, notes_md, projection, scripting, slides_api, writes
+from .writes import DESTRUCTIVE_KINDS
 
 mcp = FastMCP("slides-mcp")
 
@@ -29,19 +32,10 @@ ImageMode = Literal["ref", "none"]
 ThumbSize = Literal["SMALL", "MEDIUM", "LARGE"]
 PostStateMode = Literal["full", "summary", "outline", "none"]
 
-# Slides API Request kinds that mutate or destroy existing content.
-# `exec_batch_update` requires `confirm_destructive=True` to apply any of these.
-DESTRUCTIVE_KINDS = frozenset({
-    "deleteObject",
-    "deleteSlide",
-    "deleteText",
-    "deleteTableRow",
-    "deleteTableColumn",
-    "deleteParagraphBullets",
-    "replaceAllText",
-    "replaceAllShapesWithImage",
-    "replaceAllShapesWithSheetsChart",
-})
+NotesFormat = Literal["text", "markdown"]
+NotesMode = Literal["replace", "append"]
+
+__all__ = ["DESTRUCTIVE_KINDS", "mcp"]
 
 
 # ---- helpers --------------------------------------------------------
@@ -151,104 +145,17 @@ def _project_deck_outline(
     }
 
 
-def _walk_element_objectids(
-    el: dict[str, Any],
-    sid: str,
-    idx: dict[str, str],
-) -> None:
-    """DFS: index every nested element objectId in `el` to its owning slide id.
-
-    Used by `_extract_affected_slide_ids` to map element-scoped requests
-    (updateTextStyle, updateShapeProperties, etc.) back to a slide.
-    """
-    if oid := el.get("objectId"):
-        idx[oid] = sid
-    children = el.get("elementGroup", {}).get("children", []) or []
-    for c in children:
-        _walk_element_objectids(c, sid, idx)
-
-
 def _extract_affected_slide_ids(
     requests: list[dict[str, Any]],
     replies: list[dict[str, Any]],
     prez: dict[str, Any],
 ) -> list[str]:
-    """Best-effort derivation of slide ids touched by a batchUpdate.
+    """Slides a batchUpdate touches; see `writes.affected_slide_ids`."""
+    return writes.affected_slide_ids(requests, replies, prez)
 
-    Walks request bodies for `pageObjectId` (slide refs) and `objectId`
-    (slide id OR element id mapped via `prez`). Walks replies for
-    `createSlide`/`duplicateObject` server-generated ids.
 
-    Special case: `replaceAllText` without a `pageObjectIds` scope is
-    deck-wide — returns ALL slide ids.
-
-    Returns sorted list of slide objectIds known to the deck.
-    """
-    slide_ids = {s["objectId"] for s in prez.get("slides", []) or []}
-
-    elem_to_slide: dict[str, str] = {}
-    for slide in prez.get("slides", []) or []:
-        sid = slide["objectId"]
-        for el in slide.get("pageElements", []) or []:
-            _walk_element_objectids(el, sid, elem_to_slide)
-
-    affected: set[str] = set()
-
-    for req in requests:
-        if rat := req.get("replaceAllText"):
-            scope = rat.get("pageObjectIds")
-            if scope:
-                affected.update(s for s in scope if s in slide_ids)
-            else:
-                # whole-deck scope
-                return sorted(slide_ids)
-        for body in req.values():
-            if not isinstance(body, dict):
-                continue
-            # Top-level pageObjectId (most update* requests)
-            pid = body.get("pageObjectId")
-            if pid in slide_ids:
-                affected.add(pid)
-            # Top-level pageObjectIds list (updatePageElementsZOrder, etc.)
-            for sid in body.get("pageObjectIds", []) or []:
-                if sid in slide_ids:
-                    affected.add(sid)
-            # Nested elementProperties.pageObjectId (createShape/Image/Line/Video/Table)
-            ep = body.get("elementProperties")
-            if isinstance(ep, dict):
-                nested_pid = ep.get("pageObjectId")
-                if nested_pid in slide_ids:
-                    affected.add(nested_pid)
-            # Top-level objectId (slide id OR element id mapped via prez)
-            oid = body.get("objectId")
-            if oid in slide_ids:
-                affected.add(oid)
-            elif oid and oid in elem_to_slide:
-                affected.add(elem_to_slide[oid])
-            # Top-level objectIds / childrenObjectIds lists (group/ungroup, etc.)
-            related_lists = (
-                body.get("objectIds") or [],
-                body.get("childrenObjectIds") or [],
-            )
-            for lst in related_lists:
-                for related in lst:
-                    if related in slide_ids:
-                        affected.add(related)
-                    elif related in elem_to_slide:
-                        affected.add(elem_to_slide[related])
-
-    for reply in replies or []:
-        if cs := reply.get("createSlide"):
-            if oid := cs.get("objectId"):
-                affected.add(oid)
-        if dup := reply.get("duplicateObject"):
-            oid = dup.get("objectId")
-            if oid in slide_ids:
-                affected.add(oid)
-            elif oid and oid in elem_to_slide:
-                affected.add(elem_to_slide[oid])
-
-    return sorted(affected)
+def _slide_shapes(ctx: normalize.DeckContext, slide: dict[str, Any]) -> list[normalize.FlatShape]:
+    return normalize.normalize_page(slide, ctx.theme_for(slide))
 
 
 # ---- tools ----------------------------------------------------------
@@ -288,6 +195,7 @@ def read_slides(
     detail: Detail = "summary",
     include_notes: bool = True,
     include_images: ImageMode = "ref",
+    notes_format: NotesFormat = "text",
 ) -> dict[str, Any]:
     """Read one or more slides at the requested level of detail.
 
@@ -310,6 +218,16 @@ def read_slides(
       include_images:  "ref" → emit `ref://<object_id>` for picture elements
                                 (use `render_thumbnail` to actually see them).
                        "none" → omit image references entirely.
+      notes_format:    "text" (default) → notes as plain text.
+                       "markdown" → notes with structure kept: **bold**,
+                       *italic*, #/##/### headers, `-` bullets nested by two
+                       spaces. The same subset `write_speaker_notes` accepts.
+
+    Raw detail reports each element's page-space box (rotation and groups
+    applied) and, only when they differ from the default: `fill` (kind
+    none|solid|image|inherit|other, hex, alpha, theme slot), `outline`,
+    `autofit`, `rotation_deg`, `parent_id`; runs add `weight`, UTF-16
+    `start`/`end` and `color_theme`. Each slide adds `background`.
 
     Returns:
       {deck_id, title, slide_count, detail, slides: [...]}
@@ -321,9 +239,12 @@ def read_slides(
         raise ValueError(f"detail must be outline|summary|full|raw; got {detail!r}")
     if include_images not in ("ref", "none"):
         raise ValueError(f"include_images must be ref|none; got {include_images!r}")
+    if notes_format not in ("text", "markdown"):
+        raise ValueError(f"notes_format must be text|markdown; got {notes_format!r}")
 
     deck_id = slides_api.deck_id_from_url(deck_url)
     prez = slides_api.get_presentation(deck_id)
+    ctx = normalize.DeckContext(prez)
     all_slides = prez.get("slides", []) or []
     deck_positions = {s["objectId"]: i for i, s in enumerate(all_slides, start=1)}
     target_ids = _resolve_slide_ids(prez, slides)
@@ -334,22 +255,28 @@ def read_slides(
         slide = by_id.get(sid)
         if not slide:
             continue
-        shapes = normalize.normalize_page(slide)
+        shapes = _slide_shapes(ctx, slide)
         archetype = classify.classify(shapes)
-        notes = normalize.extract_notes_text(slide) if include_notes else ""
-        out.append(
-            projection.project(
-                sid,
-                shapes,
-                archetype,
-                notes,
-                detail=detail,
-                include_images=(include_images == "ref"),
-                position=deck_positions.get(sid),
-                hidden=normalize.is_hidden(slide),
-                layout_id=normalize.layout_id(slide),
-            )
+        notes = ""
+        if include_notes:
+            notes = (notes_md.to_markdown(normalize.notes_shape(slide)[1])
+                     if notes_format == "markdown" else normalize.extract_notes_text(slide))
+        row = projection.project(
+            sid,
+            shapes,
+            archetype,
+            notes,
+            detail=detail,
+            include_images=(include_images == "ref"),
+            position=deck_positions.get(sid),
+            hidden=normalize.is_hidden(slide),
+            layout_id=normalize.layout_id(slide),
         )
+        if detail == "raw":
+            bg = ctx.background_for(slide)
+            if bg != {"kind": "solid", "hex": "#FFFFFF", "alpha": 1.0}:
+                row["background"] = bg
+        out.append(row)
 
     return {
         "deck_id": deck_id,
@@ -531,7 +458,7 @@ def exec_batch_update(
     if not requests:
         raise ValueError("`requests` must be non-empty")
 
-    request_kinds = [next(iter(r.keys())) for r in requests if r]
+    request_kinds = writes.request_kinds(requests)
     destructive = [k for k in request_kinds if k in DESTRUCTIVE_KINDS]
 
     if dry_run:
@@ -558,19 +485,7 @@ def exec_batch_update(
         }
 
     deck_id = slides_api.deck_id_from_url(deck_url)
-
-    try:
-        api_response = slides_api.batch_update(deck_id, requests)
-    except slides_api.SlidesApiError as e:
-        if e.status == 403:
-            raise slides_api.SlidesApiError(
-                f"{e}. If your token was minted by slides-mcp v2.0+, it likely "
-                f"has `presentations.readonly` scope only. Re-run "
-                f"`slides-mcp-auth` to mint a token with write scope.",
-                status=e.status,
-                reason=e.reason,
-            ) from e
-        raise
+    api_response = writes.apply_batch(deck_id, requests, tool="exec_batch_update")
 
     replies = api_response.get("replies", []) or []
 
@@ -836,6 +751,203 @@ def add_section_footers(
     result["footers_added"] = footers_added
     result["skipped_slide_ids"] = skipped
     return result
+
+
+@mcp.tool()
+def write_speaker_notes(
+    deck_url: str,
+    notes: dict[str, str],
+    mode: NotesMode = "replace",
+    dry_run: bool = False,
+    confirm_destructive: bool = False,
+) -> dict[str, Any]:
+    """Write speaker notes from Markdown for one or many slides in one batch.
+
+    Markdown here is only the input format: the notes get real formatting,
+    never literal symbols. Supported: paragraphs, **bold**, *italic*,
+    `#`/`##`/`###` headers (a bold paragraph at 18/16/14 pt, since notes have
+    no heading styles), and `-` bullets nested by two spaces (real Slides
+    bullets). Anything else is written as literal text. Read notes back with
+    `read_slides(..., notes_format="markdown")`; what you write reads back
+    the same.
+
+    Args:
+      deck_url:            Slides URL or raw deck ID.
+      notes:               {slide selector: markdown}. A selector is a slide
+                           id, or a 1-based position as a string ("3").
+      mode:                "replace" (default) or "append" (adds a new
+                           paragraph after the existing notes).
+      dry_run:             True → return the requests without applying.
+      confirm_destructive: Required True to replace notes that are not empty
+                           (that deletes text). Empty notes need no
+                           confirmation.
+
+    Returns the `exec_batch_update` envelope (post_state summary of the
+    touched slides) plus `slides_written`.
+    """
+    if not notes:
+        raise ValueError("`notes` must map at least one slide to markdown")
+    if mode not in ("replace", "append"):
+        raise ValueError(f"mode must be replace|append; got {mode!r}")
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+    slides = prez.get("slides", []) or []
+    by_id = {s["objectId"]: s for s in slides}
+    requests: list[dict[str, Any]] = []
+    written: list[str] = []
+    for selector, markdown in notes.items():
+        sel: Any = int(selector) if isinstance(selector, str) and selector.isdigit() else selector
+        ids = _resolve_slide_ids(prez, [sel] if isinstance(sel, int) else sel)
+        for sid in ids:
+            oid, shape = normalize.notes_shape(by_id[sid])
+            if not oid:
+                raise ValueError(f"slide {sid} has no speaker notes shape")
+            requests.extend(notes_md.build_requests(oid, markdown, mode=mode, existing=shape))
+            written.append(sid)
+    if not requests:
+        return {"slides_written": [], "applied_request_count": 0,
+                "warnings": ["Nothing to write: every markdown value was empty"], "isError": False}
+    # An append never deletes existing text; its only possible destructive
+    # kind is un-bulleting the lines it just inserted.
+    safe_append = mode == "append" and notes_md.append_is_safe(requests)
+    result = exec_batch_update(
+        deck_url=deck_id, requests=requests, dry_run=dry_run,
+        confirm_destructive=confirm_destructive or safe_append, post_state="summary",
+    )
+    result["slides_written"] = written
+    if dry_run:
+        result["preview"] = requests
+    return result
+
+
+@mcp.tool()
+async def run_deck_script(
+    deck_url: str,
+    script: str,
+    input: Any = None,  # noqa: A002 - the name agents see
+    dry_run: bool = True,
+    confirm_destructive: bool = False,
+    include_requests: bool = False,
+    render_slides: Any = None,
+    timeout_s: float = 300,
+    cpu_timeout_s: float = 30,
+    max_requests: int = 5000,
+    max_return_bytes: int = 8192,
+) -> Any:
+    """Run a JavaScript script against one deck: read, compute and edit in one call.
+
+    Use this when the edits depend on what is in the deck (re-theme every
+    slide, swap a palette, restyle every title, write notes from data). The
+    deck never enters your context; only what the script returns does.
+
+    The script is the body of an async function in a V8 sandbox with no
+    filesystem, network, imports or timers. It sees:
+      input    your `input` argument as native JSON (pass palettes, mappings
+               and copy here, not inside the script string)
+      deck     {id, title, pageSize{w,h,in}, slides[]} read once and shared.
+               slide: {id, position, hidden, layoutId, background{kind,hex,
+               alpha,luminance}, isDark, theme{ACCENT1:"#..",...},
+               notes{objectId, text, markdown}, elements[]}.
+               element: {id, kind, shapeType, placeholder, parentId, x,y,w,h
+               (EMU, page space, rotation and groups applied), in{x,y,w,h},
+               rotation, size, transform, fill{kind none|solid|image|inherit|
+               other, hex, alpha, theme}, outline, autofit, text, runs[{start,
+               end (UTF-16), text, fontFamily, weight, bold, italic, sizePt,
+               color ("#hex" or "inherited"), colorTheme}]}.
+               deck.select(sel) / deck.slide(sel): 1-based position, id,
+               "3-7", array, predicate fn, {first}, {last}, {hidden},
+               {with_notes}. slide.element(id), slide.find(pred),
+               deck.element(id), deck.slideOf(elementId).
+      emit(req | [reqs])   queue Slides API requests (nothing is sent yet)
+      await commit()       apply everything queued so far as one batch,
+                           re-read the deck and return it (also updates
+                           `deck`). Only needed when a later phase must see
+                           the result of an earlier one.
+      helpers (also top-level names): rgb, color, themeColor, solid, inch,
+               pt, toIn, toPt, newId, textStyle, styleText(el, style,
+               range?), styleRuns(el, pred, style) (keeps each run's weight
+               across a font change), setFill(el, hex|null, alpha?),
+               setBackground(slide, hex), resize(el, {w,h,x,y,pin:"left"|
+               "right"|"center", pinY:"top"|"bottom"|"middle"}), move(el, x,
+               y), textBox(slide, {text,x,y,w,h,style,id?}) (sets autofit
+               NONE), setNotes(slide, markdown, {mode}) (returns a request to
+               emit). Friendly style keys: fontFamily, weight, bold, italic,
+               underline, sizePt, color ("#hex" or {theme}).
+      console.log          captured into `logs`.
+    `return x` delivers x as native JSON in `result` (truncated past
+    `max_return_bytes`). Return a small summary, not the deck.
+
+    Safety: `dry_run` is true by default and sends nothing; it returns a
+    per-slide summary (request kinds, colours and fonts before/after) and
+    stops at the first `commit()`, because later phases would build on writes
+    that did not happen. A real apply sends each phase as ONE atomic
+    batchUpdate (a failing request leaves that phase unapplied). Requests
+    naming ids that are not in the deck, and not created earlier in the
+    batch, are refused before any API call. Destructive kinds (deleteObject,
+    deleteText, replaceAllText, ...) need confirm_destructive=true. Warnings
+    flag font changes that drop an existing weight and size or font changes
+    that likely overflow a fixed-size (autofit NONE) box.
+
+    Args:
+      deck_url:            Slides URL or raw deck ID; the script is bound to it.
+      script:              JavaScript source (function body; top-level
+                           `return` and `await` allowed).
+      input:               Any JSON value; a JSON string is parsed once.
+      dry_run:             Default true. Set false to apply.
+      confirm_destructive: Allow destructive request kinds.
+      include_requests:    Include the full request list in the response.
+      render_slides:       Slide selector (as in read_slides); after a real
+                           apply, attach up to 6 thumbnails.
+      timeout_s:           Overall wall clock incl. every commit and
+                           thumbnail. Default 300, max 1800.
+      cpu_timeout_s:       Max pure script time between commits; kills
+                           infinite loops. Default 30, max 300.
+      max_requests:        Cap across all phases. Default 5000, max 20000.
+      max_return_bytes:    Cap on the returned value. Default 8192, max 65536.
+
+    Your MCP client has its own tool-call timeout; if it is shorter than
+    `timeout_s`, the client's limit wins and the call may still be running
+    server-side when the client gives up.
+
+    Returns {result, receipt{applied_request_count, request_kinds,
+    affected_slide_ids, destructive_kinds, phases} | preview{...}, warnings,
+    logs, isError, error{kind, message, line, column, request_index}}.
+    """
+    limits, limit_notes = scripting.clamp_limits({
+        "timeout_s": timeout_s, "cpu_timeout_s": cpu_timeout_s,
+        "max_requests": max_requests, "max_return_bytes": max_return_bytes,
+    })
+    if not isinstance(script, str) or not script.strip():
+        raise ValueError("`script` must be non-empty JavaScript")
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    if not dry_run and (msg := writes.write_scope_error()):
+        return {"deck_id": deck_id, "dry_run": False, "isError": True,
+                "error": {"kind": "auth", "message": msg}}
+    value = scripting.parse_input(input)
+
+    out = await anyio.to_thread.run_sync(lambda: scripting.run(
+        deck_id, script, value,
+        dry_run=dry_run, confirm_destructive=confirm_destructive,
+        include_requests=include_requests, limits=limits,
+    ))
+    deck_after = out.pop("_deck_after", None)
+    if limit_notes:
+        out.setdefault("warnings", []).extend(limit_notes)
+    if dry_run or out.get("isError") or render_slides is None:
+        return out
+
+    def thumbs() -> list[Image]:
+        prez = deck_after or slides_api.get_presentation(deck_id)
+        ids = _resolve_slide_ids(prez, render_slides)[:scripting.MAX_THUMBNAILS]
+        return [Image(data=slides_api.get_thumbnail_bytes(deck_id, sid), format="png")
+                for sid in ids]
+
+    try:
+        images = await anyio.to_thread.run_sync(thumbs)
+    except Exception as e:  # noqa: BLE001 - thumbnails are best effort after a write
+        out.setdefault("warnings", []).append(f"thumbnails failed: {e}")
+        return out
+    return [json.dumps(out, ensure_ascii=False), *images]
 
 
 def main() -> None:

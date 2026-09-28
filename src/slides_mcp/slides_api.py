@@ -24,48 +24,50 @@ from googleapiclient.errors import HttpError
 
 from .auth import load_credentials
 
-# Minimal field mask: title + page elements with the geometry/text/colors we
-# project at any detail level. Tighter than v1's mask (no shape-property
-# fields needed for write-side roundtrip).
-DECK_OUTLINE_FIELDS = (
-    "presentationId,title,revisionId,"
-    "slides.objectId,"
-    "slides.slideProperties.isSkipped,"
-    "slides.slideProperties.layoutObjectId,"
-    "slides.slideProperties.notesPage.pageElements("
-    "objectId,shape.placeholder,shape.text.textElements.textRun.content"
-    "),"
-    "slides.pageElements("
-    "objectId,size,transform,"
-    "shape.shapeType,"
-    "shape.shapeProperties.shapeBackgroundFill.solidFill.color,"
-    "shape.shapeProperties.outline.outlineFill.solidFill.color,"
-    "shape.text.textElements.textRun,"
-    "image.contentUrl,image.sourceUrl,"
-    "line.lineType,line.lineProperties.lineFill.solidFill.color,"
-    "table.rows,table.columns,"
-    "elementGroup.children"
-    ")"
+# Field masks. One element mask serves every read path so the read tools and
+# `run_deck_script` see the same model. Paragraph styles are deliberately left
+# out (they were most of the payload); only bullets are kept, for notes.
+_TEXT_FIELDS = (
+    "text.textElements(startIndex,endIndex,paragraphMarker.bullet,"
+    "textRun(content,style(bold,italic,underline,fontFamily,fontSize,"
+    "foregroundColor,weightedFontFamily,link)))"
 )
+_ELEMENT_LEAF_FIELDS = (
+    "objectId,size,transform,"
+    "shape(shapeType,placeholder,"
+    "shapeProperties(shapeBackgroundFill,outline(outlineFill,weight,propertyState),autofit),"
+    f"{_TEXT_FIELDS}),"
+    "image(contentUrl,sourceUrl),"
+    "line(lineType,lineProperties(lineFill,weight)),"
+    "table(rows,columns),"
+    "sheetsChart.chartId"
+)
+# Groups nest: two levels get the narrow mask, anything deeper comes back whole.
+ELEMENT_FIELDS = (
+    f"{_ELEMENT_LEAF_FIELDS},"
+    f"elementGroup.children({_ELEMENT_LEAF_FIELDS},elementGroup)"
+)
+_NOTES_FIELDS = (
+    "notesPage(notesProperties.speakerNotesObjectId,"
+    f"pageElements(objectId,shape(placeholder,{_TEXT_FIELDS})))"
+)
+_PAGE_PROPS = "pageProperties(pageBackgroundFill,colorScheme)"
+
+DECK_FIELDS = (
+    "presentationId,title,revisionId,pageSize,"
+    f"masters(objectId,{_PAGE_PROPS}),"
+    f"layouts(objectId,layoutProperties(masterObjectId,name),{_PAGE_PROPS}),"
+    f"slides(objectId,{_PAGE_PROPS},"
+    f"slideProperties(isSkipped,layoutObjectId,masterObjectId,{_NOTES_FIELDS}),"
+    f"pageElements({ELEMENT_FIELDS}))"
+)
+# Kept for callers that imported the old name.
+DECK_OUTLINE_FIELDS = DECK_FIELDS
 
 SLIDE_FULL_FIELDS = (
-    "objectId,"
-    "slideProperties.isSkipped,"
-    "slideProperties.layoutObjectId,"
-    "slideProperties.notesPage.pageElements("
-    "objectId,shape.placeholder,shape.text.textElements.textRun.content"
-    "),"
-    "pageElements("
-    "objectId,size,transform,"
-    "shape.shapeType,"
-    "shape.shapeProperties.shapeBackgroundFill.solidFill.color,"
-    "shape.shapeProperties.outline.outlineFill.solidFill.color,"
-    "shape.text.textElements.textRun,"
-    "image.contentUrl,image.sourceUrl,"
-    "line.lineType,line.lineProperties.lineFill.solidFill.color,"
-    "table.rows,table.columns,"
-    "elementGroup.children"
-    ")"
+    f"objectId,{_PAGE_PROPS},"
+    f"slideProperties(isSkipped,layoutObjectId,masterObjectId,{_NOTES_FIELDS}),"
+    f"pageElements({ELEMENT_FIELDS})"
 )
 
 _URL_PATTERNS = [
@@ -114,7 +116,7 @@ def _call(fn, **kwargs):
         ) from e
 
 
-def get_presentation(deck_id: str, fields: str = DECK_OUTLINE_FIELDS) -> dict[str, Any]:
+def get_presentation(deck_id: str, fields: str = DECK_FIELDS) -> dict[str, Any]:
     """Fetch presentation with the given FieldMask."""
     svc = _slides_service()
     return _call(svc.presentations().get, presentationId=deck_id, fields=fields)
