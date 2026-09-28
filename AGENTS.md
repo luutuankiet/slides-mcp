@@ -1,0 +1,81 @@
+# slides-mcp
+
+An MCP server that lets an agent read Google Slides decks as context: outline a
+deck, read slides at four detail levels, search them, render one as a PNG. Since
+v2.1 it also has a narrow write wedge: a raw `batchUpdate` passthrough and a
+section-footer tool, both returning the post-write deck state in the same
+response. Published to PyPI and run by MCP clients over stdio with `uvx`.
+
+## Hard constraints
+
+- **Tool docstrings are what agents read.** FastMCP sends every `@mcp.tool()`
+  docstring to the client on connect, so a docstring edit changes agent
+  behaviour. Keep them true.
+- **Writes are legwork, not authorship.** Full slide authoring was cut in
+  v2.0.0; don't add creative-layout tools (see `docs/adr/`).
+- **Every write goes through `exec_batch_update`.** Destructive request kinds
+  need `confirm_destructive=True`; convenience tools build requests and delegate.
+- **Never commit credentials.** `token.json` and client secrets are gitignored.
+
+## Layout
+
+```
+src/slides_mcp/server.py      — all 7 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/slides_api.py  — Slides REST wrapper, field masks, deck-id parsing
+src/slides_mcp/normalize.py   — Slides API pageElement JSON → FlatShape
+src/slides_mcp/classify.py    — topology-based archetype label per slide
+src/slides_mcp/projection.py  — FlatShape → outline / summary / full / raw dicts
+src/slides_mcp/auth.py        — token.json load and refresh
+src/slides_mcp/bootstrap.py   — `slides-mcp-auth` OAuth consent; cli.py is the entry point
+skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate requests
+.claude-plugin/plugin.json    — plugin manifest that ships that skill
+releases/vX.Y.Z.md            — hand-written release notes, required per tag
+tests/unit/                   — pytest, no network
+```
+
+## Commands
+
+```sh
+uv sync                              # install with dev tools
+uv run pytest tests/unit/ -q         # tests (CI gate)
+uv run ruff check src/ tests/        # lint (CI gate)
+uv run slides-mcp                    # start the stdio server
+```
+
+`mypy` is a dev dependency but is not clean and CI does not run it.
+
+<!-- Standard block. Everything above belongs to this project; everything below is
+     the pointer every repo laid out this way carries. -->
+
+## Documentation
+
+Indexed in [docs/README.md](docs/README.md). Every page is self-contained — it
+assumes you opened that one file and have nothing else loaded.
+
+| where | what | read it |
+|---|---|---|
+| [architecture/](docs/architecture/) | where behaviour lives, one page per area | before going looking for something |
+| [traps/](docs/traps/) | failure modes with no error message, indexed by symptom | before debugging something wrong but not crashing |
+| [reference/](docs/reference/) | simply true, expensive to re-derive | when you need the detail |
+| [adr/](docs/adr/) | why the repo is the way it is | before changing something that looks odd |
+
+## Before you wrap up
+
+Leave the repo holding what this session cost you to find out. Four rules.
+
+1. **Sort it, and expect most of it to go nowhere.** A next action is an issue. A
+   durable, expensive-to-re-derive fact is a page. A choice that was hard to
+   reverse, surprising without context and a real trade-off is a decision record
+   under `docs/adr/`. Status, dates, version pins and plans are none of those —
+   delete them.
+2. **A doc is the last resort.** Type error → test → comment at the site → doc.
+   Name the single line you would have commented instead; if you can name it,
+   comment it and stop.
+3. **Verify against running code before writing, and date the page `verified:`.**
+   Anything remembered from earlier in the session is stale until re-read. Deleting
+   a draft because the problem is already fixed is a success.
+4. **Append, never rewrite.** Supersede a merged decision record with a new one
+   naming what it replaces. A trap filename is an identifier quoted elsewhere:
+   edit the body, never the name.
+
+Then run `scripts/gen-docs-index.sh`. Never hand-maintain an index.
