@@ -35,6 +35,26 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 | `run_deck_script(deck_url, script, input?, dry_run?, ...)` | **(v2.2)** Run JavaScript against the deck in a sandbox: read, compute and edit in one call |
 | `install_skill()` | **(v2.3)** Returns the shipped agent skill (every file plus install steps) so the agent can install it for the user. No deck, no Google sign-in |
 
+## Compared with Google's Slides MCP server
+
+Google runs a hosted Slides MCP server (`https://slidesmcp.googleapis.com/mcp/v1`),
+in Developer Preview as of September 2026. Its four tools wrap the Slides REST
+API directly and return its JSON. slides-mcp shapes the deck for the agent first.
+
+| | slides-mcp | Google's server |
+|---|---|---|
+| Read a slide | outline ~60 tokens, summary with notes ~190 | raw JSON: ~7,800 tokens unmasked, ~820 with a hand-written text-only field mask |
+| Deck index, search, slide ranges | `get_deck_outline`, `search_deck`, slide selectors | none: read it all or compose a field mask |
+| See a slide | inline PNG | a URL the client may or may not fetch |
+| Raw writes | `exec_batch_update`: destructive requests need `confirm_destructive`, dry run, post-write state in the same reply | `update_presentation`: no server-side guard or dry run; its description tells the agent to reread the deck to verify |
+| Beyond raw writes | section footers, Markdown speaker notes, `run_deck_script` | none |
+| Only Google has | | comment reads, a revision check on writes, nothing to host |
+| Status | GA Slides API, runs where you run it | Developer Preview; its terms let Google use data sent through it to improve the API |
+
+Token counts were measured on the four-slide test recording in this repo; for
+Google's server they are lower bounds. Sources and method:
+[docs/reference/google-slides-mcp.md](docs/reference/google-slides-mcp.md).
+
 ## Detail modes
 
 `read_slides` mirrors `read_files`: one tool, multi-mode, batched. Pick the cheapest detail level that answers the question.

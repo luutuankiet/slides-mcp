@@ -36,6 +36,7 @@ Simply true, and expensive to re-derive.
 | page | summary | verified |
 |---|---|---|
 | [Cutting a release](reference/cutting-a-release.md) | the ordered steps that get a version onto GitHub Releases and PyPI without the tag-triggered workflow failing | 2026-09-28 |
+| [Google's Slides MCP server compared with slides-mcp](reference/google-slides-mcp.md) | what Google's hosted Slides MCP server (Developer Preview) offers, measured token cost and write guards side by side with slides-mcp, and how to repeat the measurements | 2026-09-28 |
 
 ## Decisions
 
@@ -47,5 +48,6 @@ it with a new one rather than editing it.
 - [Keep repository knowledge in docs/, loaded on demand](adr/0003-agent-docs-layout.md)
 - [Run agent scripts in embedded V8, in a worker process per call](adr/0004-deck-scripts-in-embedded-v8.md)
 - [Deliver the agent skill through an MCP tool](adr/0005-skill-delivery-through-mcp-tool.md)
+- [Keep self-hosting slides-mcp rather than adopt Google's Slides MCP server](adr/0006-keep-self-hosting-over-google-slides-mcp.md)
 
 <!-- END GENERATED INDEX -->
