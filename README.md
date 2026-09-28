@@ -1,6 +1,6 @@
 # slides-mcp v2
 
-A minimal MCP server for Google Slides as agent context. **5 read primitives + 2 curated write tools** (footers, batch text edits) for agent legwork. Token-efficient, mirrors `read_files` philosophy.
+A minimal MCP server for Google Slides as agent context. **5 read primitives + 4 write tools** for agent legwork: a raw `batchUpdate` passthrough, section footers, Markdown speaker notes, and `run_deck_script` for edits that depend on what is in the deck. Token-efficient, mirrors `read_files` philosophy.
 
 ## What this is
 
@@ -26,11 +26,13 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 |------|---------|
 | `auth_status()` | Token state without exposing secrets |
 | `get_deck_outline(deck_url)` | ~20 tok/slide whole-deck index — first call on every new deck |
-| `read_slides(deck_url, slides?, detail?, include_notes?, include_images?)` | Read one or many slides at chosen detail |
+| `read_slides(deck_url, slides?, detail?, include_notes?, include_images?, notes_format?)` | Read one or many slides at chosen detail; `notes_format="markdown"` returns notes with their formatting |
 | `search_deck(deck_url, query, slides?, regex?, include_notes?)` | Substring or regex search across deck |
 | `render_thumbnail(deck_url, slide_id, size?)` | One slide as native PNG (`ImageContent`) |
 | `exec_batch_update(deck_url, requests, dry_run?, confirm_destructive?, post_state?)` | **(v2.1)** Raw passthrough to Slides `batchUpdate` + multi-granularity post-state return |
 | `add_section_footers(deck_url, sections, template?, ...)` | **(v2.1)** Add chapter/section footer to every slide; idempotent re-runs |
+| `write_speaker_notes(deck_url, notes, mode?, dry_run?, confirm_destructive?)` | **(v2.2)** Speaker notes from Markdown for many slides in one batch; real bold, italic, headers and bullets |
+| `run_deck_script(deck_url, script, input?, dry_run?, ...)` | **(v2.2)** Run JavaScript against the deck in a sandbox: read, compute and edit in one call |
 
 ## Detail modes
 
@@ -41,7 +43,7 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 | `outline` | ~30 | title + archetype + element_count + has_notes/has_image flags + position + hidden + layout_id + notes_chars |
 | `summary` | ~150 | title + joined body (cap 1500) + image_count + **full notes (no truncation)** + notes_chars + position/hidden/layout_id |
 | `full` | ~300 | title + every body string (no cap) + image refs + table/chart counts + **full notes** + position/hidden/layout_id |
-| `raw` | ~600 | every leaf shape with geometry + style + runs + full notes (debug; faithful) |
+| `raw` | ~600 | every leaf shape with page-space geometry + style + runs + full notes; fill, outline, autofit, rotation and group parent when not default (debug; faithful) |
 
 **Notes are content, not metadata.** Speaker notes are emitted verbatim in `summary`/`full`/`raw` so agents can read drafts where the narrative lives in notes (common case for working decks). The token budget reflects this — pay it; it's the difference between "reading the deck" and "reading the slide chrome".
 
@@ -95,6 +97,67 @@ For `exec_batch_update`, the agent writes Slides API Request dicts directly. See
 
 v2.1 keeps the v2 default scope `presentations.readonly` for fresh consents. **Existing v0.x tokens (with `presentations` write scope) keep working.** Fresh-v2-token holders need to re-run `slides-mcp-auth` with a write-scope client to use write tools. The server surfaces a `403 PERMISSION_DENIED` with an actionable error message ("Re-run `slides-mcp-auth` to mint a token with write scope") when the scope is insufficient.
 
+## v2.2 deck scripts and Markdown notes
+
+### `run_deck_script`
+
+When an edit depends on what is in the deck (re-theme every dark slide, swap
+a palette, restyle every title, resize every box of one kind), the agent no
+longer reads the deck, computes requests in its context and pastes them back.
+It sends a short JavaScript function body instead; the server runs it against
+the deck and applies what it queues.
+
+```js
+// input: {"from": "#1A73E8", "to": "#0B8043"}
+for (const slide of deck.slides)
+  for (const el of slide.elements)
+    if (el.fill && el.fill.hex === input.from) emit(setFill(el, input.to, el.fill.alpha));
+return {done: true};
+```
+
+- **Dry run by default.** `dry_run=true` sends nothing and returns a per-slide
+  preview: request kinds, colours and fonts before and after.
+- **Atomic phases.** Everything queued is sent as one `batchUpdate`.
+  `await commit()` splits the work into phases when a later step needs to see
+  what an earlier one created.
+- **Refused before sending:** requests naming ids that are not in the deck,
+  more than `max_requests`, and destructive kinds without
+  `confirm_destructive=true`.
+- **Warnings** for font changes that drop a weight, and for text that will
+  likely overflow a fixed-size box.
+- **`render_slides`** attaches up to six thumbnails after a real apply.
+- **Sandbox.** Embedded V8 (`mini-racer`) in a child process per call, with no
+  filesystem, network, imports or timers. `cpu_timeout_s` (default 30 s)
+  kills runaway loops, `timeout_s` (default 300 s) bounds the whole call. The
+  sandbox guards against accidents, not adversaries: the script runs with your
+  own token against a deck you named. See
+  `docs/adr/0004-deck-scripts-in-embedded-v8.md`.
+
+The script sees a resolved read model: page-space geometry with rotation and
+groups applied, fills that say `none` for a transparent box (the API reports
+white), theme colours resolved to hex, font weights, and text runs with UTF-16
+offsets ready for `textRange`. The tool docstring lists every field and
+helper.
+
+### `write_speaker_notes`
+
+```python
+write_speaker_notes(deck_url, notes={"3": "## Open with\n- the **numbers**\n  - *then* the story"})
+```
+
+Markdown is only the input format: the notes get real bold, italic, bullets
+and header-sized paragraphs, never literal `**`. `mode="append"` adds a new
+paragraph after the existing notes and needs no confirmation; replacing
+non-empty notes needs `confirm_destructive=true`. `read_slides(...,
+notes_format="markdown")` reads them back in the same form.
+
+### Audit line
+
+Every applied batch, from any write tool, prints one JSON line to stderr
+starting with `slides-mcp audit ` (tool, deck id, request count, kinds; plus
+the script hash and phase for deck scripts). Set `SLIDES_MCP_AUDIT_LOG` to a
+file path to also append those lines to a file.
+
 ## Slide selectors
 
 Mirrors the `read_files` per-file flexibility:
@@ -135,7 +198,12 @@ flowchart TD
 
 ```
 ┌──────────────────────────────────────────┐
-│ server.py — 7 FastMCP tools (5 read + 2 write) │
+│ server.py — 9 FastMCP tools (5 read + 4 write) │
+├──────────────────────────────────────────┤
+│ scripting.py + sandbox/ — deck scripts   │
+│   V8 worker process per call             │
+│ writes.py — the one write path + audit   │
+│ notes_md.py — Markdown ⇄ speaker notes   │
 ├──────────────────────────────────────────┤
 │ projection.py — outline/summary/full/raw │
 │   per-slide dict with token-budget tiers │
@@ -212,6 +280,8 @@ Don't pull `full` on every slide. Start with outline, drill into the 5–10 slid
 - ❌ Expecting pixel-perfect layout from `exec_batch_update`/`add_section_footers`. v2.1 is legwork, not authorship — fine-tune in the Slides UI.
 
 ## Status
+
+v2.2.0 — September 2026. Adds `run_deck_script` (sandboxed JavaScript against the deck, dry run by default, atomic phases) and `write_speaker_notes` (Markdown in, formatted notes out). `read_slides` gains `notes_format="markdown"`, and the read model now reports transparent fills, rotation, group-relative geometry, theme colours and font weights correctly. Every applied batch writes an audit line.
 
 v2.1.0 — released May 2026. Adds curated write wedge: `exec_batch_update` (Slides API passthrough) + `add_section_footers` (proof tool). Both ship with multi-granularity `post_state` envelope (deck_outline + touched slides[]) — a verify-after-write pattern not found in production MCP servers we audited. Read surface (5 tools) unchanged from v2.0.1.
 
