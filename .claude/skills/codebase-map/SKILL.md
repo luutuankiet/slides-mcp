@@ -33,7 +33,7 @@ Long-form pages that belong to no single area.
 
 | page | summary | verified |
 |---|---|---|
-| [Deploying the shared server to Cloud Run (draft)](../../../docs/deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server, with the Firestore database, service account access and settings it needs; draft until HTTP mode ships | 2026-09-28 |
+| [Deploying the shared server to Cloud Run (draft)](../../../docs/deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings), and how a release tag is built and deployed with gcloud run deploy --source; draft until HTTP mode ships | 2026-09-28 |
 
 <!-- END GENERATED INDEX -->
 
