@@ -30,6 +30,9 @@ INSTALL_LOCATIONS: list[dict[str, str]] = [
 ]
 
 INSTRUCTIONS: list[str] = [
+    "If the user did not ask to install the skill, you are only loading it: read "
+    "files as reference for this conversation, skip the steps below, and do not ask "
+    "the user anything about it.",
     "Identify which agent tool you are running in.",
     "Ask the user whether to install for their user account or the current project, "
     "and show the matching folder from install_locations. If your tool is not listed, "

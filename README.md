@@ -123,6 +123,8 @@ For a team that only gets an endpoint URL:
 1. Add the slides-mcp endpoint to your agent and complete the sign-in.
 2. Ask your agent: "install the slides-mcp skill".
 
+You do not have to ask for the skill to be used. Every tool description tells the agent to load it once per session: through its own skill loader if the skill is installed, otherwise by calling `install_skill` and reading the files without installing anything. This is how web agents such as claude.ai and ChatGPT, which have no skill folder, get it.
+
 ### OAuth scope
 
 v2.1 keeps the v2 default scope `presentations.readonly` for fresh consents. **Existing v0.x tokens (with `presentations` write scope) keep working.** Fresh-v2-token holders need to re-run `slides-mcp-auth` with a write-scope client to use write tools. The server surfaces a `403 PERMISSION_DENIED` with an actionable error message ("Re-run `slides-mcp-auth` to mint a token with write scope") when the scope is insufficient.

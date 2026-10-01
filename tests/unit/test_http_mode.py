@@ -270,3 +270,20 @@ async def test_server_reports_slides_mcp_version_not_fastmcps():
 
     out = await _initialize(mcp.http_app(stateless_http=True, json_response=True))
     assert out["init"]["result"]["serverInfo"]["version"] == __version__
+
+
+async def test_every_tool_but_install_skill_tells_agents_to_load_the_skill():
+    # Web agents have no skill folder; the descriptions are all they read.
+    from slides_mcp.server import SKILL_HINT, mcp
+
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name, tool in tools.items():
+        assert (SKILL_HINT in tool.description) is (name != "install_skill"), name
+    assert "once per session" in tools["install_skill"].description
+
+
+async def test_server_instructions_carry_the_skill_hint():
+    from slides_mcp.server import SKILL_HINT, mcp
+
+    out = await _initialize(mcp.http_app(stateless_http=True, json_response=True))
+    assert out["init"]["result"]["instructions"] == SKILL_HINT

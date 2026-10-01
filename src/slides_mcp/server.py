@@ -36,15 +36,29 @@ from . import (
 )
 from .writes import DESTRUCTIVE_KINDS
 
-mcp = FastMCP("slides-mcp", version=__version__)
+SKILL_HINT = (
+    "Load the slides-mcp skill once per session, before your first slides-mcp "
+    "call, if it is not already in your context: use your harness's own skill "
+    "loader if the skill is installed, otherwise call `install_skill` and read "
+    "the files it returns."
+)
+
+mcp = FastMCP("slides-mcp", version=__version__, instructions=SKILL_HINT)
 # fastmcp advertises tools.listChanged; this server's tool list never changes.
 mcp._mcp_server.notification_options.tools_changed = False
 _fastmcp_tool = mcp.tool
 
 
-def _tool():
+def _tool(skill_hint: bool = True):
     # Keep the whole docstring as the description; fastmcp would drop Returns.
-    return lambda fn: _fastmcp_tool(description=fn.__doc__)(fn)
+    # Web agents only see these descriptions, so each one carries SKILL_HINT;
+    # it is appended to __doc__ itself so the two never disagree.
+    def register(fn):
+        if skill_hint:
+            fn.__doc__ = f"{fn.__doc__.rstrip()}\n\n    Skill: {SKILL_HINT}\n    "
+        return _fastmcp_tool(description=fn.__doc__)(fn)
+
+    return register
 
 
 Detail = Literal["outline", "summary", "full", "raw"]
@@ -191,13 +205,14 @@ def auth_status() -> dict[str, Any]:
     return auth.credentials_info()
 
 
-@_tool()
+@_tool(skill_hint=False)
 def install_skill() -> dict[str, Any]:
     """Return the slides-mcp agent skill (every file, with its path) plus install steps.
 
-    Call this when the user asks to install, set up or update the slides-mcp
-    skill. Needs no deck and no Google sign-in. Follow the `instructions` in
-    the response.
+    Call this once per session to load the skill when your harness does not
+    already have it installed, and when the user asks to install, set up or
+    update the slides-mcp skill. Needs no deck and no Google sign-in. Follow
+    the `instructions` in the response.
     """
     return skill_bundle.bundle()
 
