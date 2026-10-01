@@ -262,6 +262,13 @@ The startup log carries one `UserWarning` that a configured store "is
 unstable and may change"; that is the storage library labelling its Firestore
 backend, and a reason the image installs from `uv.lock`.
 
+When those pass but signing in fails, Google's error page names the setting:
+
+| Google says | fix |
+|---|---|
+| `Error 401: invalid_client` ("The OAuth client was not found") | `SLIDES_MCP_GOOGLE_CLIENT_ID` is not a client in this project |
+| `Error 400: redirect_uri_mismatch` | the Web client has no authorized redirect URI `<SERVICE_URL>/auth/callback`; the console form leaves that list empty unless you add it |
+
 ## What signs everyone out
 
 | event | result |
@@ -286,4 +293,3 @@ and at this size they add up to a few thousand small documents a year.
 ## Still to write
 
 - Instance sizing flags for `gcloud run deploy`, once they can be measured.
-- Confirm the OAuth console steps against a real click-through.
