@@ -19,8 +19,8 @@ import re
 from typing import Any, Literal
 
 import anyio
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.utilities.types import Image
+from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 
 from . import (
     auth,
@@ -36,6 +36,15 @@ from . import (
 from .writes import DESTRUCTIVE_KINDS
 
 mcp = FastMCP("slides-mcp")
+# fastmcp advertises tools.listChanged; this server's tool list never changes.
+mcp._mcp_server.notification_options.tools_changed = False
+_fastmcp_tool = mcp.tool
+
+
+def _tool():
+    # Keep the whole docstring as the description; fastmcp would drop Returns.
+    return lambda fn: _fastmcp_tool(description=fn.__doc__)(fn)
+
 
 Detail = Literal["outline", "summary", "full", "raw"]
 ImageMode = Literal["ref", "none"]
@@ -171,13 +180,17 @@ def _slide_shapes(ctx: normalize.DeckContext, slide: dict[str, Any]) -> list[nor
 # ---- tools ----------------------------------------------------------
 
 
-@mcp.tool()
+@_tool()
 def auth_status() -> dict[str, Any]:
-    """Diagnostic: report token.json state without exposing secrets."""
+    """Diagnostic: report sign-in state without exposing secrets.
+
+    stdio: the token.json path, scopes and expiry. Remote (HTTP) mode:
+    `mode: "http"`, the caller's email, granted scopes and token expiry.
+    """
     return auth.credentials_info()
 
 
-@mcp.tool()
+@_tool()
 def install_skill() -> dict[str, Any]:
     """Return the slides-mcp agent skill (every file, with its path) plus install steps.
 
@@ -188,7 +201,7 @@ def install_skill() -> dict[str, Any]:
     return skill_bundle.bundle()
 
 
-@mcp.tool()
+@_tool()
 def get_deck_outline(deck_url: str) -> dict[str, Any]:
     """Cheap whole-deck index. ~20 tok/slide. First call on any new deck.
 
@@ -209,7 +222,7 @@ def get_deck_outline(deck_url: str) -> dict[str, Any]:
     return _project_deck_outline(prez, deck_id=deck_id)
 
 
-@mcp.tool()
+@_tool()
 def read_slides(
     deck_url: str,
     slides: Any = None,
@@ -308,7 +321,7 @@ def read_slides(
     }
 
 
-@mcp.tool()
+@_tool()
 def search_deck(
     deck_url: str,
     query: str,
@@ -391,7 +404,7 @@ def search_deck(
     }
 
 
-@mcp.tool()
+@_tool()
 def render_thumbnail(
     deck_url: str,
     slide_id: str,
@@ -418,7 +431,7 @@ def render_thumbnail(
     return Image(data=png, format="png")
 
 
-@mcp.tool()
+@_tool()
 def exec_batch_update(
     deck_url: str,
     requests: list[dict],
@@ -570,7 +583,7 @@ _FOOTER_FONT_PT = 9
 _FOOTER_OBJID_PREFIX = "slides_mcp_footer_"
 
 
-@mcp.tool()
+@_tool()
 def add_section_footers(
     deck_url: str,
     sections: list[dict],
@@ -774,7 +787,7 @@ def add_section_footers(
     return result
 
 
-@mcp.tool()
+@_tool()
 def write_speaker_notes(
     deck_url: str,
     notes: dict[str, str],
@@ -841,7 +854,7 @@ def write_speaker_notes(
     return result
 
 
-@mcp.tool()
+@_tool()
 async def run_deck_script(
     deck_url: str,
     script: str,

@@ -50,8 +50,11 @@ def write_scope_error() -> str | None:
     """A message when token.json's granted scopes cannot write, else None.
 
     An unreadable or scope-less token returns None: the API call itself is
-    then the judge, and its 403 carries the same advice.
+    then the judge, and its 403 carries the same advice. HTTP mode always
+    returns None: the deployer's OAuth app grants write scope to every caller.
     """
+    if auth.http_mode():
+        return None
     try:
         scopes = set(auth.credentials_info().get("scopes") or [])
     except Exception:  # noqa: BLE001 - diagnostics only
@@ -96,6 +99,13 @@ def apply_batch(
     try:
         resp = slides_api.batch_update(deck_id, requests)
     except slides_api.SlidesApiError as e:
+        if e.status == 403 and auth.http_mode():
+            raise slides_api.SlidesApiError(
+                f"{e}. Check the caller can edit this deck. If they can, ask the user "
+                f"to sign in to this MCP server again from their MCP client.",
+                status=e.status,
+                reason=e.reason,
+            ) from e
         if e.status == 403:
             raise slides_api.SlidesApiError(
                 f"{e}. If your token was minted by slides-mcp v2.0+, it likely "

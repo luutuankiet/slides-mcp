@@ -9,7 +9,8 @@ Public surface mirrors what the MCP tool layer needs:
   - batch_update(deck_id, requests) → raw Slides API batchUpdate (v2.1)
 
 v1's `copy_deck` (Drive scope) stays dropped — v2.1 doesn't restore deck cloning.
-All calls use a cached googleapiclient service built from token.json.
+Every call gets its client from `_slides_service()`: stdio caches one built
+from token.json; HTTP mode builds one per call from the caller's token.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from urllib.parse import urlparse
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from .auth import load_credentials
+from . import auth
 
 # Field masks. One element mask serves every read path so the read tools and
 # `run_deck_script` see the same model. Paragraph styles are deliberately left
@@ -91,9 +92,18 @@ def deck_id_from_url(url_or_id: str) -> str:
     raise ValueError(f"Unrecognized deck url or id: {url_or_id}")
 
 
-@cache
 def _slides_service():
-    creds = load_credentials()
+    """The Slides client for the current caller."""
+    if auth.http_mode():
+        # Per call, never cached: one caller's client must not serve another.
+        return build("slides", "v1", credentials=auth.caller_credentials(),
+                     cache_discovery=False)
+    return _stdio_service()
+
+
+@cache
+def _stdio_service():
+    creds = auth.load_credentials()
     return build("slides", "v1", credentials=creds, cache_discovery=False)
 
 
@@ -109,8 +119,12 @@ def _call(fn, **kwargs):
         return fn(**kwargs).execute()
     except HttpError as e:
         status = getattr(e.resp, "status", None)
+        message = f"Slides API error {status}: {e.reason or str(e)}"
+        if auth.http_mode() and str(status) == "401":
+            message += (". Google no longer accepts this caller's sign-in. Ask the user "
+                        "to re-authenticate this MCP server in their MCP client, then retry.")
         raise SlidesApiError(
-            f"Slides API error {status}: {e.reason or str(e)}",
+            message,
             status=int(status) if status else None,
             reason=e.reason,
         ) from e

@@ -1,0 +1,10 @@
+# What `gcloud run deploy --source .` uploads to Cloud Build. Allowlist, so
+# local credentials (token.json, creds.json, client_secret*.json) never leave.
+/*
+!/Dockerfile
+!/.dockerignore
+!/pyproject.toml
+!/uv.lock
+!/src/
+!/skills/
+**/__pycache__

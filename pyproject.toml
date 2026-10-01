@@ -4,12 +4,18 @@ version = "2.3.0"
 description = "MCP server for reading Google Slides decks as agent context, with a narrow write surface for legwork edits and sandboxed deck scripts"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.2.0,<2",
+    "fastmcp>=4.0.10,<5",
     "google-api-python-client>=2.140",
     "google-auth>=2.34",
     "google-auth-oauthlib>=1.2",
     "google-auth-httplib2>=0.2",
     "mini-racer>=0.14.1",
+]
+
+[project.optional-dependencies]
+# `slides-mcp serve-http` only: the Firestore auth store. stdio needs none of it.
+http = [
+    "py-key-value-aio[firestore]",
 ]
 
 [project.scripts]
