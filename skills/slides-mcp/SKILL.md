@@ -6,7 +6,7 @@ description: Editing Google Slides through the slides-mcp server - when to use r
 
 A reference for using `exec_batch_update` to make legwork-shaped edits to Google Slides via slides-mcp. The agent writes Slides API Request dicts directly — this doc is the cheat sheet.
 
-> ⚠️ Per v2.1 mandate: this tool is for **legwork** (bulk text edits, footers, global formatting). It accepts that pixel-perfect layout is impossible without visual feedback. If you need creative authorship, the answer is the human in the Slides UI.
+> ⚠️ This tool is for **legwork** (bulk text edits, footers, global formatting). It accepts that pixel-perfect layout is impossible without visual feedback. If you need creative authorship, the answer is the human in the Slides UI.
 
 ## Pick the tool first
 
@@ -189,32 +189,28 @@ result = exec_batch_update(deck_url, requests, post_state="summary")
 # result["affected_slide_ids"]           = ["g1", "g2", …]
 ```
 
-### Example 3 — Change global font on all titles
+### Example 3 — Change the font on every title
+
+An edit that depends on what is in the deck, so it is a script, not a loop of
+`read_slides` calls:
 
 ```python
-# 1. Discover title element IDs across the deck
-outline = get_deck_outline(deck_url)
-title_objectids = []
-for s in outline["slides"]:
-    detail = read_slides(deck_url, slides=[s["slide_id"]], detail="raw")
-    for shape in detail["slides"][0].get("shapes", []):
-        if shape.get("kind") == "text" and "title" in (shape.get("role") or "").lower():
-            title_objectids.append(shape["id"])
-
-# 2. Build batch
-requests = [
-    {"updateTextStyle": {
-        "objectId": oid,
-        "textRange": {"type": "ALL"},
-        "style": {"fontFamily": "Inter"},
-        "fields": "fontFamily"
-    }}
-    for oid in title_objectids
-]
-
-# 3. Fire
-exec_batch_update(deck_url, requests, post_state="outline")
+run_deck_script(
+    deck_url,
+    script="""
+      let n = 0;
+      for (const slide of deck.slides)
+        for (const el of slide.find(e => ["TITLE", "CENTERED_TITLE"].includes(e.placeholder))) {
+          emit(styleRuns(el, null, {fontFamily: input.font}));
+          n++;
+        }
+      return {titles: n};
+    """,
+    input={"font": "Inter"},
+)  # dry run: read the preview and warnings, then call again with dry_run=False
 ```
+
+`styleRuns` keeps each run's weight across the font change.
 
 ## Tips
 

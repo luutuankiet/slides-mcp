@@ -58,6 +58,6 @@ it with a new one rather than editing it.
 - [Deliver the agent skill through an MCP tool](adr/0005-skill-delivery-through-mcp-tool.md)
 - [Keep self-hosting slides-mcp rather than adopt Google's Slides MCP server](adr/0006-keep-self-hosting-over-google-slides-mcp.md)
 - [The caller's Google credentials come from request context, not a parameter](adr/0007-caller-credentials-from-request-context.md)
-- [Every tool tells the agent to load the skill once per session](adr/0008-tools-tell-agents-to-load-the-skill.md)
+- [Point agents at the skill from the raw-requests tool, not from every tool](adr/0008-tools-tell-agents-to-load-the-skill.md)
 
 <!-- END GENERATED INDEX -->

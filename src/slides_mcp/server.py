@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Literal
 
 import anyio
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 from fastmcp.utilities.types import Image
 
 from . import (
@@ -36,29 +38,41 @@ from . import (
 )
 from .writes import DESTRUCTIVE_KINDS
 
-SKILL_HINT = (
-    "Load the slides-mcp skill once per session, before your first slides-mcp "
-    "call, if it is not already in your context: use your harness's own skill "
-    "loader if the skill is installed, otherwise call `install_skill` and read "
-    "the files it returns."
+# Some clients show these before any tool is loaded (tool search), so they
+# route an agent that has found only one tool.
+INSTRUCTIONS = (
+    "Start with `get_deck_outline`. For edits that depend on what is in the deck, "
+    "use `run_deck_script`. Before composing raw `exec_batch_update` requests, the "
+    "slides-mcp skill has the Request cheat sheet and worked examples: load it with "
+    "your own skill loader if installed, otherwise call `install_skill`."
 )
 
-mcp = FastMCP("slides-mcp", version=__version__, instructions=SKILL_HINT)
+mcp = FastMCP("slides-mcp", version=__version__, instructions=INSTRUCTIONS)
 # fastmcp advertises tools.listChanged; this server's tool list never changes.
 mcp._mcp_server.notification_options.tools_changed = False
 _fastmcp_tool = mcp.tool
 
 
-def _tool(skill_hint: bool = True):
+def _tool():
     # Keep the whole docstring as the description; fastmcp would drop Returns.
-    # Web agents only see these descriptions, so each one carries SKILL_HINT;
-    # it is appended to __doc__ itself so the two never disagree.
-    def register(fn):
-        if skill_hint:
-            fn.__doc__ = f"{fn.__doc__.rstrip()}\n\n    Skill: {SKILL_HINT}\n    "
-        return _fastmcp_tool(description=fn.__doc__)(fn)
+    return lambda fn: _fastmcp_tool(description=fn.__doc__)(fn)
 
-    return register
+
+class _CallLog(Middleware):
+    """One content-free stderr line per tool call: name, duration, outcome."""
+
+    async def on_call_tool(self, context, call_next):
+        start = time.monotonic()
+        ok = False
+        try:
+            result = await call_next(context)
+            ok = not getattr(result, "is_error", False)
+            return result
+        finally:
+            writes.log_call(context.message.name, time.monotonic() - start, ok)
+
+
+mcp.add_middleware(_CallLog())
 
 
 Detail = Literal["outline", "summary", "full", "raw"]
@@ -205,12 +219,13 @@ def auth_status() -> dict[str, Any]:
     return auth.credentials_info()
 
 
-@_tool(skill_hint=False)
+@_tool()
 def install_skill() -> dict[str, Any]:
     """Return the slides-mcp agent skill (every file, with its path) plus install steps.
 
-    Call this once per session to load the skill when your harness does not
-    already have it installed, and when the user asks to install, set up or
+    Call this to load the skill's Request cheat sheet and worked examples
+    before composing raw `exec_batch_update` requests, if your harness does
+    not already have the skill, and when the user asks to install, set up or
     update the slides-mcp skill. Needs no deck and no Google sign-in. Follow
     the `instructions` in the response.
     """
@@ -457,17 +472,26 @@ def exec_batch_update(
 ) -> dict[str, Any]:
     """Apply Slides API Requests; return result + multi-granularity post-state.
 
+    For edits that depend on what is in the deck (restyle every title, swap a
+    palette), use `run_deck_script` instead: it reads the deck server-side.
+    Use this for a handful of requests whose ids you already know.
+
     The agent composes `requests` directly from the Slides API Request reference:
       https://developers.google.com/slides/api/reference/rest/v1/presentations/request
-    The server forwards verbatim, then re-reads the deck and projects post-state.
+    The server forwards verbatim, then re-reads the deck and projects post-state:
+    `post_state.deck_outline` (unless `post_state="none"`) plus
+    `post_state.slides[]` for each touched slide (`summary` or `full`).
 
-    The novelty (verify-after-write multi-granularity return): every successful
-    call returns `post_state.deck_outline` (always, unless `post_state="none"`)
-    plus `post_state.slides[]` for each touched slide (when `post_state` ∈
-    {summary, full}). Cuts the fire-then-read round-trip the agent would otherwise
-    need. No production MCP server (verified across `matteoantoci/google-slides-mcp`
-    177★, `mcp/git`, `notion-mcp-server`) bundles a verify-read into write returns
-    by default.
+    Composing requests:
+      - Slide ids come from `get_deck_outline` (`slide_id`); element ids from
+        `read_slides(..., detail="raw")` (`id`).
+      - Sizes are EMU: 1 in = 914400, 1 pt = 12700; a 16:9 page is
+        9144000 x 5143500.
+      - After `insertText` into a new TEXT_BOX, send `updateShapeProperties`
+        with `autofit.autofitType = "NONE"` before any other
+        `updateShapeProperties`, or those fail with an opaque error.
+      - Worked examples and the full cheat sheet: the slides-mcp skill (your
+        own skill loader, or `install_skill`).
 
     Args:
       deck_url:             Slides URL or raw deck ID.
@@ -749,7 +773,7 @@ def add_section_footers(
                 "insertionIndex": 0,
             }
         })
-        # LOG-015 invariant: explicit autofit:NONE before any further updateShapeProperties
+        # autofit NONE first, or later updateShapeProperties calls on this box fail
         requests.append({
             "updateShapeProperties": {
                 "objectId": footer_oid,

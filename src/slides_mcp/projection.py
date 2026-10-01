@@ -131,8 +131,7 @@ def _summary(
     if notes:
         # Notes-as-content workflow: emit FULL notes, never truncate. Drafts
         # where the speaker-notes pane carries the actual script would be
-        # unreadable under the v2.0.0 200-char preview cap. User constraint
-        # (LOG-031): "the stake is high \u2014 maximum verbosity please."
+        # unreadable under the v2.0.0 200-char preview cap.
         out["notes"] = notes.strip()
         out["notes_chars"] = len(notes)
     return out

@@ -123,7 +123,7 @@ For a team that only gets an endpoint URL:
 1. Add the slides-mcp endpoint to your agent and complete the sign-in.
 2. Ask your agent: "install the slides-mcp skill".
 
-You do not have to ask for the skill to be used. Every tool description tells the agent to load it once per session: through its own skill loader if the skill is installed, otherwise by calling `install_skill` and reading the files without installing anything. This is how web agents such as claude.ai and ChatGPT, which have no skill folder, get it.
+You do not have to install the skill for agents to find it. The `exec_batch_update` description and the server's instructions point agents at it before they write raw requests; an agent without a skill folder, such as claude.ai or ChatGPT, calls `install_skill` and reads it without installing anything.
 
 ### OAuth scope
 

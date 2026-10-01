@@ -46,7 +46,10 @@ In order:
    `slides-mcp-auth` for a write-scope token. Every applied batch writes one
    JSON line to stderr, prefixed `slides-mcp audit `, with the tool, deck id,
    request count and kinds; set `SLIDES_MCP_AUDIT_LOG` to a path to also
-   append it to a file (`writes.audit`, 68–77).
+   append it to a file (`writes.audit`, 68–77). Separately, every tool call,
+   reads included, writes one `slides-mcp call {"tool", "ms", "ok"}` line to
+   stderr from the `_CallLog` middleware in `server.py` (`writes.log_call`);
+   it never carries arguments or deck content.
 6. `post_state="none"` returns now. Otherwise re-read the deck **once** and
    build `deck_outline` plus, for `summary`/`full`, a projection of each
    affected slide (491–550).

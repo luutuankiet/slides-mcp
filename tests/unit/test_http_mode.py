@@ -272,18 +272,31 @@ async def test_server_reports_slides_mcp_version_not_fastmcps():
     assert out["init"]["result"]["serverInfo"]["version"] == __version__
 
 
-async def test_every_tool_but_install_skill_tells_agents_to_load_the_skill():
-    # Web agents have no skill folder; the descriptions are all they read.
-    from slides_mcp.server import SKILL_HINT, mcp
+
+async def test_raw_requests_tool_routes_to_scripts_and_the_skill():
+    # With tool search an agent may load only this tool; its description must
+    # carry the facts raw requests need and point at the rest.
+    from slides_mcp.server import mcp
 
     tools = {t.name: t for t in await mcp.list_tools()}
-    for name, tool in tools.items():
-        assert (SKILL_HINT in tool.description) is (name != "install_skill"), name
-    assert "once per session" in tools["install_skill"].description
+    text = tools["exec_batch_update"].description
+    for needle in ("run_deck_script", "914400", "autofitType", "install_skill"):
+        assert needle in text, needle
 
 
-async def test_server_instructions_carry_the_skill_hint():
-    from slides_mcp.server import SKILL_HINT, mcp
+async def test_server_instructions_route_agents():
+    from slides_mcp.server import INSTRUCTIONS, mcp
 
     out = await _initialize(mcp.http_app(stateless_http=True, json_response=True))
-    assert out["init"]["result"]["instructions"] == SKILL_HINT
+    assert out["init"]["result"]["instructions"] == INSTRUCTIONS
+
+
+async def test_each_tool_call_logs_its_name_and_nothing_else(capsys):
+    from slides_mcp.server import mcp
+
+    await mcp.call_tool("install_skill", {})
+    lines = [x for x in capsys.readouterr().err.splitlines()
+             if x.startswith("slides-mcp call ")]
+    record = json.loads(lines[-1].removeprefix("slides-mcp call "))
+    assert record["tool"] == "install_skill" and record["ok"] is True
+    assert set(record) == {"tool", "ms", "ok"}

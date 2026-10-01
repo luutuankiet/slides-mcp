@@ -80,6 +80,12 @@ def audit(record: dict[str, Any]) -> None:
             print(f"slides-mcp audit: cannot append to {path}: {e}", file=sys.stderr)
 
 
+def log_call(tool: str, seconds: float, ok: bool) -> None:
+    """One stderr line per tool call, for usage questions. No arguments, no content."""
+    line = json.dumps({"tool": tool, "ms": round(seconds * 1000), "ok": ok})
+    print(f"slides-mcp call {line}", file=sys.stderr, flush=True)
+
+
 _REQ_INDEX_RE = re.compile(r"requests\[(\d+)\]")
 
 
