@@ -199,6 +199,20 @@ async def test_failed_validation_is_not_cached():
     assert calls == ["t", "t"]
 
 
+def test_auth_store_sanitizes_url_client_ids(monkeypatch):
+    # claude.ai signs in with a CIMD client ID, which is a URL.
+    import key_value.aio.stores.firestore as fs
+
+    made = {}
+    monkeypatch.setattr(fs, "FirestoreStore", lambda **kw: made.update(kw) or object())
+    settings, _ = http_mode.check_settings(GOOD_ENV)
+    http_mode.build_auth_store(settings)
+    key = made["key_sanitization_strategy"].sanitize(
+        "https://claude.ai/oauth/mcp-oauth-client-metadata")
+    assert "/" not in key
+    assert made["key_sanitization_strategy"].sanitize("deploy-smoke-test") == "deploy-smoke-test"
+
+
 def test_provider_wiring():
     from key_value.aio.stores.memory import MemoryStore
 

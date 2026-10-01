@@ -138,13 +138,23 @@ def build_auth_store(settings: Settings):
     """The auth store: a named Firestore database, collections prefixed `slides-mcp__`."""
     try:
         from key_value.aio.stores.firestore import FirestoreStore
+        from key_value.aio.stores.firestore.store import (
+            FirestoreV1CollectionSanitizationStrategy,
+            FirestoreV1KeySanitizationStrategy,
+        )
     except ImportError as e:
         raise SystemExit(
             "slides-mcp serve-http needs the `http` extra: "
             "install `slides-mcp[http]`.") from e
     from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
 
-    store = FirestoreStore(database=settings.firestore_database)
+    # Off by default in the store. Without it a client whose ID is a URL (CIMD,
+    # e.g. claude.ai) fails every lookup: Firestore document IDs can't hold "/".
+    store = FirestoreStore(
+        database=settings.firestore_database,
+        key_sanitization_strategy=FirestoreV1KeySanitizationStrategy(),
+        collection_sanitization_strategy=FirestoreV1CollectionSanitizationStrategy(),
+    )
     return PrefixCollectionsWrapper(store, prefix=COLLECTION_PREFIX)
 
 
