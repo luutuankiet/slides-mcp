@@ -6,6 +6,8 @@ v2.1 it also has a narrow write wedge: a raw `batchUpdate` passthrough and a
 section-footer tool, both returning the post-write deck state in the same
 response. v2.2 adds Markdown speaker notes and `run_deck_script`, which runs
 agent JavaScript against the deck in a sandboxed V8 worker process. Published to PyPI and run by MCP clients over stdio with `uvx`.
+v2.4 adds `slides-mcp serve-http`: a stateless HTTP mode for Cloud Run where each
+caller signs in with their own Google account.
 
 ## Hard constraints
 
@@ -34,11 +36,13 @@ src/slides_mcp/slides_api.py  — Slides REST wrapper, field masks, deck-id pars
 src/slides_mcp/normalize.py   — Slides API pageElement JSON → FlatShape
 src/slides_mcp/classify.py    — topology-based archetype label per slide
 src/slides_mcp/projection.py  — FlatShape → outline / summary / full / raw dicts
-src/slides_mcp/auth.py        — token.json load and refresh
+src/slides_mcp/auth.py        — token.json load and refresh; stdio vs HTTP mode; the HTTP caller's credentials
+src/slides_mcp/http_mode.py   — serve-http: settings check, Google sign-in proxy, Firestore auth store
 src/slides_mcp/bootstrap.py   — `slides-mcp-auth` OAuth consent; cli.py is the entry point
 skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate requests; the wheel
                                 bundles it as slides_mcp/_skills_data/ for install_skill
 .claude-plugin/plugin.json    — plugin manifest that ships that skill
+Dockerfile                    — the serve-http image Cloud Run builds; .gcloudignore/.dockerignore allowlist it
 releases/vX.Y.Z.md            — hand-written release notes, required per tag
 tests/unit/                   — pytest, no network
 tests/fake_api.py             — fake Slides API over a scrubbed deck recording

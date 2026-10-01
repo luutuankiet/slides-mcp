@@ -15,9 +15,9 @@ something is implemented.
 
 | page | covers | verified |
 |---|---|---|
-| [Auth and entry points](architecture/auth-and-entry-points.md) | where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup | 2026-09-28 |
+| [Auth and entry points](architecture/auth-and-entry-points.md) | where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup, how HTTP mode (serve-http) picks up each caller's Google token | 2026-10-01 |
 | [Deck scripts (run_deck_script)](architecture/deck-scripts.md) | how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, what is refused before any API call, where errors and warnings come from | 2026-09-28 |
-| [Packaging, release and the shipped skill](architecture/packaging-and-release.md) | how a version gets to PyPI and GitHub Releases, what the release workflow checks, where the agent skill that ships with the package lives | 2026-09-28 |
+| [Packaging, release and the shipped skill](architecture/packaging-and-release.md) | how a version gets to PyPI and GitHub Releases, what the release workflow checks, where the agent skill that ships with the package lives | 2026-10-01 |
 | [Read path (outline, read, search, thumbnail)](architecture/read-path.md) | how a deck URL becomes the slide dicts an agent sees, where detail modes, selectors, archetypes, titles and speaker notes come from | 2026-09-28 |
 | [Write wedge (exec_batch_update, add_section_footers, write_speaker_notes)](architecture/write-wedge.md) | where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, how section footers are placed, how Markdown notes become requests | 2026-09-28 |
 
@@ -44,7 +44,7 @@ Long-form pages that belong to no single area.
 
 | page | summary | verified |
 |---|---|---|
-| [Deploying the shared server to Cloud Run (draft)](deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings), and how a release tag is built and deployed with gcloud run deploy --source; draft until HTTP mode ships | 2026-09-28 |
+| [Deploying the shared server to Cloud Run](deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings, Google OAuth client), how a release tag is built and deployed with gcloud run deploy --source, and how to check it is up | 2026-10-01 |
 
 ## Decisions
 
@@ -57,5 +57,6 @@ it with a new one rather than editing it.
 - [Run agent scripts in embedded V8, in a worker process per call](adr/0004-deck-scripts-in-embedded-v8.md)
 - [Deliver the agent skill through an MCP tool](adr/0005-skill-delivery-through-mcp-tool.md)
 - [Keep self-hosting slides-mcp rather than adopt Google's Slides MCP server](adr/0006-keep-self-hosting-over-google-slides-mcp.md)
+- [The caller's Google credentials come from request context, not a parameter](adr/0007-caller-credentials-from-request-context.md)
 
 <!-- END GENERATED INDEX -->

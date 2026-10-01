@@ -1,7 +1,7 @@
 ---
 title: Packaging, release and the shipped skill
 covers: how a version gets to PyPI and GitHub Releases, what the release workflow checks, where the agent skill that ships with the package lives
-verified: 2026-09-28
+verified: 2026-10-01
 ---
 
 # Packaging, release and the shipped skill
@@ -9,7 +9,10 @@ verified: 2026-09-28
 ## Package
 
 `pyproject.toml` builds a wheel with hatchling from `src/slides_mcp`. Runtime
-dependencies are the MCP SDK and the Google API client libraries; `pytest`,
+dependencies are `fastmcp` 4 and the Google API client libraries. The `http`
+extra adds the Firestore auth store that `slides-mcp serve-http` needs; stdio
+installs never pull it in. The `Dockerfile` installs that extra from
+`uv.lock`; `pytest`,
 `pytest-asyncio`, `ruff` and `mypy` are in the `dev` dependency group.
 `uv.lock` is committed, and CI installs with `uv sync --frozen`.
 
@@ -54,5 +57,17 @@ It returns every file under the folder, so adding pages needs no code change.
 `tests/unit/test_install_skill.py` builds a wheel and fails if the copy is
 missing.
 
-`mcp` is capped below 2: `uvx` installs ignore `uv.lock`, and mcp 2.x removed
-`FastMCP`, so an uncapped fresh install cannot start the server.
+`fastmcp` is capped below 5. `server.py` writes two things fastmcp would
+otherwise get wrong for this server, and a test guards each:
+
+- it registers every tool with `description=fn.__doc__`, because fastmcp
+  moves `Args:` into parameter schemas and drops `Returns:` from the
+  description agents read (`test_tool_descriptions_keep_returns_sections`);
+- it sets the private `mcp._mcp_server.notification_options.tools_changed`
+  to `False`, so HTTP clients are not told the tool list can change
+  (`test_http_does_not_advertise_list_changed`). stdio still reports `true`,
+  which fastmcp hardcodes; that is harmless.
+
+`http_mode.py` also writes the private `GoogleProvider._token_validator`.
+A fastmcp major release may break any of these, so the cap moves only with
+those tests passing.

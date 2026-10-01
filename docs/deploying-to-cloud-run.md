@@ -1,21 +1,15 @@
 ---
-title: Deploying the shared server to Cloud Run (draft)
-summary: the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings), and how a release tag is built and deployed with gcloud run deploy --source; draft until HTTP mode ships
-verified: 2026-09-28
+title: Deploying the shared server to Cloud Run
+summary: the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings, Google OAuth client), how a release tag is built and deployed with gcloud run deploy --source, and how to check it is up
+verified: 2026-10-01
 ---
 
-# Deploying the shared server to Cloud Run (draft)
+# Deploying the shared server to Cloud Run
 
-> **Draft.** HTTP mode is not built yet. What is written here was decided in
-> [Where does per-user auth state live on a scale-to-zero, multi-instance service?](https://github.com/luutuankiet/slides-mcp/issues/14)
-> and the two `gcloud` commands were checked against Google's Firestore docs,
-> and the settings were named in
-> [How is HTTP mode switched on, and which settings must be present before it starts?](https://github.com/luutuankiet/slides-mcp/issues/17),
-> and the build and deploy were decided in
-> [How does a release get built and deployed to Cloud Run?](https://github.com/luutuankiet/slides-mcp/issues/18).
-> The service account, secret and Cloud Build steps come from Cloud Run's docs
-> and have not been run yet, and instance sizing is still open. Finish this
-> page when HTTP mode lands.
+Every command on this page was run in a brand-new project on 2026-10-01, up
+to a deployed service answering sign-in requests. Two parts are still open:
+the Google OAuth console steps were written from Google's docs and not yet
+clicked through, and instance sizing waits for measurements.
 
 Placeholders used below:
 
@@ -62,10 +56,17 @@ write; you never create collections by hand.
      run.googleapis.com \
      cloudbuild.googleapis.com \
      artifactregistry.googleapis.com \
+     iam.googleapis.com \
+     slides.googleapis.com \
+     drive.googleapis.com \
      --project=<GCP_PROJECT>
    ```
    Cloud Build and Artifact Registry are what `gcloud run deploy --source`
-   builds and stores the image with.
+   builds and stores the image with; IAM is needed to create the service
+   account. **Slides and Drive must be on in the project that owns the OAuth
+   client**: every caller's Slides call is charged to that project, and
+   without them every tool call fails with "API has not been used in
+   project".
 
 2. **Create the auth database** in the same region as the service, with
    delete protection on. Deleting it signs every teammate out.
@@ -103,6 +104,17 @@ write; you never create collections by hand.
 5. **Review who else can read the database.** Project-wide Owner and Editor,
    and any project-level `roles/datastore.*` grant without a condition, can read
    the stored refresh tokens. Keep that list short.
+   ```
+   gcloud projects get-iam-policy <GCP_PROJECT> \
+     --flatten='bindings[].members' \
+     --filter='bindings.role:roles/owner OR bindings.role:roles/editor OR bindings.role~datastore' \
+     --format='table(bindings.role,bindings.members,bindings.condition.title)'
+   ```
+   Enabling Cloud Build and Cloud Run in a new project creates
+   `<PROJECT_NUMBER>-compute@developer.gserviceaccount.com` **with Editor**, so
+   it can read the auth database too. `--source` deploys build as that account
+   in new projects, so removing its Editor role breaks the build unless you
+   first give Cloud Build a narrower account.
 
 6. **Set the database name on the service** as
    `SLIDES_MCP_FIRESTORE_DATABASE=slides-mcp-auth`. HTTP mode refuses to start
@@ -127,13 +139,33 @@ write; you never create collections by hand.
 
 8. **Let the person deploying act as the service account.** Deploying a
    service that runs as `<SERVICE_ACCOUNT>` needs `roles/iam.serviceAccountUser`
-   on it, on top of permission to deploy Cloud Run and run Cloud Build.
+   on it, on top of permission to deploy Cloud Run and run Cloud Build. A
+   project Owner already has it; skip this step if that is you.
    ```
    gcloud iam service-accounts add-iam-policy-binding <SERVICE_ACCOUNT> \
      --project=<GCP_PROJECT> \
      --member='user:<DEPLOYER_EMAIL>' \
      --role='roles/iam.serviceAccountUser'
    ```
+
+## The Google OAuth consent screen and Web client
+
+These exist only in the Google Cloud console, under **Google Auth Platform**,
+in the project above. Not yet clicked through for this guide; correct it
+if a screen differs.
+
+1. **Branding**: app name (for example `slides-mcp`), support email,
+   developer contact email.
+2. **Audience**: **Internal**. Only accounts in your Google Workspace
+   organization can sign in. This is the only sign-in restriction there is;
+   slides-mcp does not check domains.
+3. **Data access**: add `openid`, `.../auth/userinfo.email`,
+   `.../auth/presentations` and `.../auth/drive.readonly`.
+4. **Clients → Create client**: type **Web application**. Under **Authorized
+   redirect URIs** add exactly `<SERVICE_URL>/auth/callback`. Add no
+   JavaScript origins.
+5. Copy the client ID into `SLIDES_MCP_GOOGLE_CLIENT_ID`, and put the secret
+   into Secret Manager (step 7 above) without writing it anywhere else.
 
 ## Settings
 
@@ -150,7 +182,9 @@ invalid it prints one line per problem and exits with code `2`.
 | `PORT` | no | `8080` | set by Cloud Run |
 
 To run HTTP mode locally, point it at the Firestore emulator with
-`FIRESTORE_EMULATOR_HOST`; there is no in-memory store.
+`FIRESTORE_EMULATOR_HOST`; there is no in-memory store. A plain
+`pip install slides-mcp` lacks the Firestore library; HTTP mode needs
+`slides-mcp[http]`, which the `Dockerfile` installs.
 
 ## Building and deploying a release
 
@@ -205,6 +239,29 @@ gcloud run deploy slides-mcp \
 - Memory, CPU, concurrency, request timeout and execution environment are not
   set yet; they wait for measurements of the running service.
 
+## Checking it is up
+
+No Google sign-in is needed for these. Each checks one layer:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' -X POST <SERVICE_URL>/mcp \
+  -H 'content-type: application/json' -d '{}'
+curl -s <SERVICE_URL>/.well-known/oauth-protected-resource/mcp
+curl -s -o /dev/null -w '%{http_code}\n' -X POST <SERVICE_URL>/register \
+  -H 'content-type: application/json' \
+  -d '{"client_name":"smoke","redirect_uris":["http://localhost:33418/callback"],"token_endpoint_auth_method":"none"}'
+```
+
+| check | expect | proves |
+|---|---|---|
+| `POST /mcp` with no token | `401` | the service started, so every setting passed the startup check |
+| protected resource metadata | JSON naming `<SERVICE_URL>/mcp` | `SLIDES_MCP_BASE_URL` is right |
+| `POST /register` | `201` | the service account can write the auth database |
+
+The startup log carries one `UserWarning` that a configured store "is
+unstable and may change"; that is the storage library labelling its Firestore
+backend, and a reason the image installs from `uv.lock`.
+
 ## What signs everyone out
 
 | event | result |
@@ -229,4 +286,4 @@ and at this size they add up to a few thousand small documents a year.
 ## Still to write
 
 - Instance sizing flags for `gcloud run deploy`, once they can be measured.
-- The Google OAuth consent screen and Web client, which are console-only.
+- Confirm the OAuth console steps against a real click-through.

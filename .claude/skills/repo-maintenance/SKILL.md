@@ -43,6 +43,7 @@ it with a new one rather than editing it.
 - [Run agent scripts in embedded V8, in a worker process per call](../../../docs/adr/0004-deck-scripts-in-embedded-v8.md)
 - [Deliver the agent skill through an MCP tool](../../../docs/adr/0005-skill-delivery-through-mcp-tool.md)
 - [Keep self-hosting slides-mcp rather than adopt Google's Slides MCP server](../../../docs/adr/0006-keep-self-hosting-over-google-slides-mcp.md)
+- [The caller's Google credentials come from request context, not a parameter](../../../docs/adr/0007-caller-credentials-from-request-context.md)
 
 <!-- END GENERATED INDEX -->
 
