@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 
 from . import (
+    __version__,
     auth,
     classify,
     normalize,
@@ -35,7 +36,7 @@ from . import (
 )
 from .writes import DESTRUCTIVE_KINDS
 
-mcp = FastMCP("slides-mcp")
+mcp = FastMCP("slides-mcp", version=__version__)
 # fastmcp advertises tools.listChanged; this server's tool list never changes.
 mcp._mcp_server.notification_options.tools_changed = False
 _fastmcp_tool = mcp.tool
@@ -986,7 +987,7 @@ async def run_deck_script(
 
 def main() -> None:
     """Entry point used by both the CLI and `python -m slides_mcp.server`."""
-    mcp.run()
+    mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

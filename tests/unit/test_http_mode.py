@@ -262,3 +262,11 @@ async def test_tool_descriptions_keep_returns_sections():
     assert "Returns:" in tools["search_deck"].description
     for name, tool in tools.items():
         assert tool.description == tool.fn.__doc__, name
+
+
+async def test_server_reports_slides_mcp_version_not_fastmcps():
+    from slides_mcp import __version__
+    from slides_mcp.server import mcp
+
+    out = await _initialize(mcp.http_app(stateless_http=True, json_response=True))
+    assert out["init"]["result"]["serverInfo"]["version"] == __version__
