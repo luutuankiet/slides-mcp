@@ -1,12 +1,12 @@
 ---
 title: Deck scripts (run_deck_script)
-covers: how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, what is refused before any API call, where errors and warnings come from, the thumbnails a real apply returns
+covers: how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, applying a dry run by plan_id, what is refused before any API call, where errors and warnings come from, the thumbnails a real apply returns
 verified: 2026-10-03
 ---
 
 # Deck scripts
 
-`run_deck_script` (`src/slides_mcp/server.py:973–1112`) runs an agent's
+`run_deck_script` (`src/slides_mcp/server.py:986–1153`) runs an agent's
 JavaScript against one deck. The script reads the deck, computes, and queues
 Slides API requests with `emit()`; the server applies them. The deck never
 passes through the agent's context, only the script's return value does.
@@ -102,6 +102,31 @@ did not happen, and says so with `stopped_at_commit`.
 `write_speaker_notes`, and tracks each notes shape so two `setNotes` calls on
 one slide in one phase compose correctly.
 
+## Applying a dry run by plan_id
+
+A successful dry run saves `{script, input, limits}` through the server state
+store (`src/slides_mcp/state_store.py`) and returns the key as
+`preview.plan_id`. The plan is bound to the deck id and to the caller
+(`auth.caller_id()`: `None` over stdio, the Google account's `sub` claim in
+HTTP mode) and expires after 1 hour. Over stdio it lives in process memory;
+`serve-http` keeps it in Firestore so another Cloud Run instance can apply
+it.
+
+Calling the tool with `plan_id`, `dry_run=false` and no `script` loads the
+plan and re-runs the stored script against the live deck, with the stored
+limits. It never replays the dry run's requests, pins a revision or compares
+with the preview: co-editors' changes since the dry run are picked up, and
+the receipt thumbnails are the verification. Per-call arguments come from
+the apply call, so `confirm_destructive` must be given again if the re-run
+emits destructive kinds; confirming on the dry run does not carry over.
+
+A successful apply expires the plan, since a second apply would repeat the
+edits. A refused or failed apply leaves it in place for a retry. Error kind
+`plan` covers: `plan_id` with `script`, `plan_id` without `dry_run=false`,
+and a plan that is unknown, expired, already applied, for another deck or
+made by another caller (one message for all of these, saying to run the dry
+run again, so a plan id reveals nothing about other callers' plans).
+
 ## Thumbnails after a real apply
 
 A real apply that succeeded returns thumbnails as a receipt; a dry run or an
@@ -121,7 +146,7 @@ of `write-wedge.md` for concurrency and Google's thumbnail quota.
 - Error kinds: `syntax` and `script` (with `line` and `column` in the
   script's own numbering; the wrapper adds one line, `LINE_OFFSET` in
   `worker.py`), `memory`, `timeout`, `validation`, `limit`, `destructive`,
-  `api` (with `request_index` and the failing request), `auth`.
+  `api` (with `request_index` and the failing request), `auth`, `plan`.
 - A failing API call leaves that phase unapplied, but earlier phases stay
   applied; the receipt says how many.
 - `batch_warnings` (189–246) flags font changes that drop an existing weight
@@ -138,4 +163,5 @@ of `write-wedge.md` for concurrency and Google's thumbnail quota.
 plus hand-built edge cases (transparent box, translucent theme fill, rotated
 label, weighted heading, emoji text, rich notes) and applies the request
 kinds the tests send. No network. Its `run` helper turns receipts off;
-`tests/unit/test_receipts.py` covers them.
+`tests/unit/test_receipts.py` covers them, and
+`tests/unit/test_deck_plans.py` covers plans over the in-memory store.

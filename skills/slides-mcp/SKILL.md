@@ -210,8 +210,14 @@ run_deck_script(
       return {titles: n};
     """,
     input={"font": "Inter"},
-)  # dry run: read the preview and warnings, then call again with dry_run=False
+)  # dry run: read the preview and warnings, then apply it without resending:
+
+run_deck_script(deck_url, plan_id=preview["plan_id"], dry_run=False)
 ```
+
+Applying a plan re-runs the stored script against the deck as it is now, so a
+colleague's edits since the dry run are picked up. Plans last 1 hour and apply
+once.
 
 `styleRuns` keeps each run's weight across the font change.
 

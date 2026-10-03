@@ -35,6 +35,7 @@ from . import (
     scripting,
     skill_bundle,
     slides_api,
+    state_store,
     writes,
 )
 from .writes import DESTRUCTIVE_KINDS
@@ -970,10 +971,21 @@ def write_speaker_notes(
     return result
 
 
+_PLAN_GONE = (
+    "No plan with that plan_id for this deck and caller: plans expire after 1 hour, "
+    "are single use, and apply only to the deck (and, on the hosted server, the "
+    "person) they were made for. Run the dry run again to get a new plan_id.")
+
+
+def _plan_error(deck_id: str, dry_run: bool, message: str) -> dict[str, Any]:
+    return {"deck_id": deck_id, "dry_run": dry_run, "isError": True,
+            "error": {"kind": "plan", "message": message}}
+
+
 @_tool()
 async def run_deck_script(
     deck_url: str,
-    script: str,
+    script: str | None = None,
     input: Any = None,  # noqa: A002 - the name agents see
     dry_run: bool = True,
     confirm_destructive: bool = False,
@@ -984,6 +996,7 @@ async def run_deck_script(
     max_requests: int = 5000,
     max_return_bytes: int = 8192,
     receipt: receipts.Receipt = "medium",
+    plan_id: str | None = None,
 ) -> Any:
     """Run a JavaScript script against one deck: read, compute and edit in one call.
 
@@ -1039,12 +1052,18 @@ async def run_deck_script(
     flag font changes that drop an existing weight and size or font changes
     that likely overflow a fixed-size (autofit NONE) box.
 
+    To apply a dry run, pass its `preview.plan_id` with dry_run=false and no
+    script: the stored script and input re-run against the deck as it is now.
+
     Args:
       deck_url:            Slides URL or raw deck ID; the script is bound to it.
       script:              JavaScript source (function body; top-level
-                           `return` and `await` allowed).
+                           `return` and `await` allowed). Omit with plan_id.
       input:               Any JSON value; a JSON string is parsed once.
       dry_run:             Default true. Set false to apply.
+      plan_id:             From a dry run's preview; applies that script and
+                           input (and its limits) once, within 1 hour, to the
+                           same deck. confirm_destructive is still needed here.
       confirm_destructive: Allow destructive request kinds.
       include_requests:    Include the full request list in the response.
       render_slides:       Slide selector (as in read_slides) overriding which
@@ -1067,8 +1086,8 @@ async def run_deck_script(
     server-side when the client gives up.
 
     Returns {result, receipt{applied_request_count, request_kinds,
-    affected_slide_ids, destructive_kinds, phases} | preview{...}, warnings,
-    logs, isError, error{kind, message, line, column, request_index}}, plus
+    affected_slide_ids, destructive_kinds, phases} | preview{plan_id, ...},
+    warnings, logs, isError, error{kind, message, line, column, request_index}}, plus
     `thumbnails{size, slide_ids, not_shown_slide_ids?, hint?}` when
     thumbnails are attached (then sent as a JSON text block followed by the
     images).
@@ -1077,14 +1096,29 @@ async def run_deck_script(
         "timeout_s": timeout_s, "cpu_timeout_s": cpu_timeout_s,
         "max_requests": max_requests, "max_return_bytes": max_return_bytes,
     })
-    if not isinstance(script, str) or not script.strip():
-        raise ValueError("`script` must be non-empty JavaScript")
     receipts.check(receipt)
     deck_id = slides_api.deck_id_from_url(deck_url)
+    if plan_id is not None and script is not None:
+        return _plan_error(deck_id, dry_run, (
+            "Pass either `script` (to run or dry-run it) or `plan_id` (to apply an "
+            "earlier dry run), not both."))
+    if plan_id is not None and dry_run:
+        return _plan_error(deck_id, dry_run, (
+            "`plan_id` applies an earlier dry run: call again with dry_run=false. "
+            "To preview again, send the script instead."))
+    if plan_id is None:
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("`script` must be non-empty JavaScript")
+        value = scripting.parse_input(input)
     if not dry_run and (msg := writes.write_scope_error()):
         return {"deck_id": deck_id, "dry_run": False, "isError": True,
                 "error": {"kind": "auth", "message": msg}}
-    value = scripting.parse_input(input)
+    if plan_id is not None:
+        plan = state_store.current().load_plan(plan_id, deck_id=deck_id,
+                                               caller=auth.caller_id())
+        if plan is None:
+            return _plan_error(deck_id, dry_run, _PLAN_GONE)
+        script, value, limits = plan["script"], plan["input"], plan["limits"]
 
     out = await anyio.to_thread.run_sync(lambda: scripting.run(
         deck_id, script, value,
@@ -1094,6 +1128,13 @@ async def run_deck_script(
     deck_after = out.pop("_deck_after", None)
     if limit_notes:
         out.setdefault("warnings", []).extend(limit_notes)
+    if dry_run and not out.get("isError"):
+        out["preview"]["plan_id"] = state_store.current().save_plan(
+            {"script": script, "input": value, "limits": limits},
+            deck_id=deck_id, caller=auth.caller_id())
+    if plan_id is not None and not out.get("isError"):
+        # Applied: a second apply would repeat the edits on top of themselves.
+        state_store.current().expire_plan(plan_id)
     if dry_run or out.get("isError") or receipt == "off":
         return out
 

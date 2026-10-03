@@ -65,6 +65,27 @@ def caller_credentials() -> Credentials:
     return Credentials(token=token.token)
 
 
+def caller_id() -> str | None:
+    """Who is calling, for binding server state to them: None over stdio.
+
+    HTTP mode: the Google account's stable `sub` claim (email as a fallback).
+    """
+    if not _http_mode:
+        return None
+    token = _caller_access_token()
+    if token is None:
+        raise NotSignedInError(
+            "No signed-in caller on this request. Ask the user to re-authenticate "
+            "this MCP server in their MCP client, then retry."
+        )
+    claims = token.claims or {}
+    who = claims.get("sub") or getattr(token, "subject", None) or claims.get("email")
+    if not who:
+        raise NotSignedInError("The signed-in caller has no Google account id; "
+                               "re-authenticate this MCP server, then retry.")
+    return str(who)
+
+
 def token_path() -> Path:
     """Resolve where token.json lives. Env var wins; fallback to ./token.json."""
     if env := os.environ.get("SLIDES_MCP_TOKEN_PATH"):
