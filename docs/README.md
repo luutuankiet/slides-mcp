@@ -27,7 +27,10 @@ Failure modes that produce no error message, indexed by the symptom you
 would observe. Read before debugging behaviour that is wrong but not
 crashing.
 
-_No pages yet._
+| symptom | page | area | verified |
+|---|---|---|---|
+|  | [image-replace-matching-nothing-returns-success](traps/image-replace-matching-nothing-returns-success.md) |  | 2026-10-03 |
+|  | [svg-text-vanishes-in-slim-image](traps/svg-text-vanishes-in-slim-image.md) |  | 2026-10-03 |
 
 ## Reference
 
