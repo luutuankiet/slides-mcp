@@ -1,12 +1,12 @@
 ---
-title: Write wedge (exec_batch_update, add_section_footers, write_speaker_notes)
-covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests
+title: Write wedge (exec_batch_update, add_section_footers, write_speaker_notes, place_image)
+covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises, hosts and places an image
 verified: 2026-10-03
 ---
 
 # Write wedge
 
-Four tools, all in `src/slides_mcp/server.py`, and one function that
+Five tools, all in `src/slides_mcp/server.py`, and one function that
 actually sends: `writes.apply_batch` (`src/slides_mcp/writes.py:88–114`).
 
 ```mermaid
@@ -14,6 +14,7 @@ flowchart LR
   ebu[exec_batch_update] --> ar[_apply_requests]
   footers[add_section_footers] -->|builds requests| ar
   notes[write_speaker_notes] -->|builds requests| ar
+  place[place_image] -->|one image request| ar
   ar --> apply[writes.apply_batch]
   script[run_deck_script] -->|one batch per commit| apply
   apply --> api[slides_api.batch_update]
@@ -22,22 +23,23 @@ flowchart LR
   ebu --> receipt[_attach_receipt]
   footers --> receipt
   script --> receipt
+  place --> receipt
   receipt --> thumbs[receipts.render]
 ```
 
 `run_deck_script` has its own page, `deck-scripts.md`; this one covers the
-other three and the shared helpers.
+other four and the shared helpers.
 
 Line numbers are **a starting point, not an address**. Confirm by what the
 code says, and re-date this page if you correct a range.
 
-## `exec_batch_update` (server.py 466–681)
+## `exec_batch_update` (server.py 468–690)
 
 The agent passes Slides API Request dicts; the server forwards them verbatim.
 The tool itself only checks `receipt` and chains two steps: `_apply_requests`
-(553–661) does everything below and returns the reply plus the touched slides;
-`_attach_receipt` (664–681) adds thumbnails. `add_section_footers` and
-`write_speaker_notes` call `_apply_requests` directly. In order:
+(555–656) does everything below and returns the reply plus the touched slides;
+`_attach_receipt` (673–690) adds thumbnails. `add_section_footers` and
+`write_speaker_notes` and `place_image` call `_apply_requests` directly. In order:
 
 1. Validate `post_state` and non-empty `requests`.
 2. Take each request's first key as its kind; intersect with
@@ -48,7 +50,7 @@ The tool itself only checks `receipt` and chains two steps: `_apply_requests`
 3. `dry_run=True` returns kinds, the first five requests and the destructive
    kinds found, without calling the API.
 4. Destructive kinds without `confirm_destructive=True` return
-   `isError: True` with a warning; **they do not raise**.
+   `isError: True` with a warning (`_refusal`, 658); **they do not raise**.
 5. Call `writes.apply_batch`, which calls `slides_api.batch_update`
    (`slides_api.py:165`). A 403 is re-raised with a hint to re-run
    `slides-mcp-auth` for a write-scope token. Every applied batch writes one
@@ -109,7 +111,7 @@ Element ids are mapped to slides using the deck **as re-read after the
 write**. An element the batch deleted is no longer in that deck, so a
 `deleteObject` on an element contributes no slide id.
 
-## `add_section_footers` (server.py 694–901)
+## `add_section_footers` (server.py 703–910)
 
 Turns `[{name, slide_range | slide_ids | slide_positions}]` into four
 requests per slide: `createShape` (TEXT_BOX), `insertText`,
@@ -129,7 +131,7 @@ receipt.
   (`skills/slides-mcp/SKILL.md`) tells agents to do the same in their own
   batches.
 
-## `write_speaker_notes` (server.py 904–970)
+## `write_speaker_notes` (server.py 913–985)
 
 Takes `{slide selector: markdown}` and a `mode` of `replace` or `append`,
 builds requests with `notes_md.build_requests` (`notes_md.py:224–333`) and
@@ -155,6 +157,45 @@ nested by two spaces.
   round trip `write → read_slides(notes_format="markdown")` is tested without
   the network.
 
+## `place_image` (server.py 1166–1380, `svg_raster.py`)
+
+Puts an SVG or a public image URL on one slide, into a marker placeholder or
+an explicit box, as **one** request through `_apply_requests` (audit tool
+name `place_image`), so the audit line, post-state and receipt are the same
+as any other write. In order:
+
+1. Argument checks raise `ValueError`: exactly one of `svg` / `image_url`,
+   exactly one of `placeholder` / `box`, `fit` only with a placeholder,
+   `editable` must be false. A placeholder without `confirm_destructive`
+   returns `_refusal` before any read, render or upload.
+2. In a worker thread (`_place_image`): for SVG, `store.check_image_hosting()`
+   fails fast over stdio or with no bucket. Read the deck once; an unknown
+   slide is error kind `target`. For a placeholder, find shapes on the slide
+   whose text contains the marker; none is error kind `marker` before
+   anything is uploaded. The first match's box sets the raster size.
+3. SVG: `svg_raster.rasterise` sizes the root `<svg>` to the target box at
+   3 px per point (capped at 24 megapixels), so the PNG has the box's aspect
+   ratio and the drawing is centred in it. It refuses any `href` that is not
+   `#id` or `data:` (resvg would read a local file path). The PNG goes to
+   `store.put_image`; Google gets the signed URL.
+4. Placeholder: `replaceAllShapesWithImage` with `pageObjectIds=[slide_id]`
+   and `CENTER_INSIDE` (`contain`) or `CENTER_CROP` (`cover`). Box:
+   `createImage` with size and transform in points.
+5. A `SlidesApiError` becomes error kind `google`, with the
+   `Invalid requests[0].<kind>: ` prefix stripped.
+6. `finally`: the hosted object is deleted on every path after upload. A
+   failed delete is a warning; the bucket's lifecycle rule is the backstop.
+7. A replace reply without `occurrencesChanged` is error kind `marker`
+   (`docs/traps/image-replace-matching-nothing-returns-success.md`).
+
+**Why a child process for resvg.** resvg reports text it dropped for want of
+a font only as a log line on file descriptor 1. Over stdio that descriptor is
+the MCP transport, and in any mode it is shared by every thread, so the
+renderer runs as `python -m slides_mcp.svg_raster`: the child points fd 1 at
+its stderr, writes the PNG to the real stdout, and the parent turns `No match
+for ... font-family` lines into warnings. It also bounds a slow SVG with a
+30 s timeout. A small SVG renders in about 0.06 s, child start included.
+
 ## Tests
 
 `tests/unit/test_write_wedge.py` monkeypatches `slides_api` and covers the
@@ -164,3 +205,7 @@ audit line and the scope check are in `tests/unit/test_deck_script.py`,
 which drives the tools against `tests/fake_api.py`. Receipts are in
 `tests/unit/test_receipts.py`, over the same fake, which records every
 thumbnail asked for and its size and can be told to fail or to block one.
+`place_image` is in `tests/unit/test_place_image.py`, over the same fake (it
+answers `createImage` and `replaceAllShapesWithImage` like Slides, including
+the empty reply) and a `HostedStateStore` whose storage client is a fake GCS
+bucket. `tests/unit/test_svg_raster.py` runs the real renderer.

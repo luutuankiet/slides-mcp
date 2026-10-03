@@ -94,8 +94,9 @@ def prepare(svg: str, width_px: int, height_px: int) -> str:
 def _warnings(log: str) -> list[str]:
     out: list[str] = []
     for family in dict.fromkeys(_NO_FONT_RE.findall(log)):
-        out.append(f"Text in font-family {family} did not render: this server has no "
-                   f"matching font. Use sans-serif, serif or monospace.")
+        out.append(f"Text in font-family {family} did not render: no font on this server "
+                   f"matches it. Use sans-serif, serif or monospace; if those fail too, "
+                   f"the server has no fonts installed.")
     glyphs = list(dict.fromkeys(_NO_GLYPH_RE.findall(log)))
     if glyphs:
         out.append(f"No font on this server has the characters {glyphs}; they render as "

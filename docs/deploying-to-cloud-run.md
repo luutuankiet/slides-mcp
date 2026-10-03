@@ -172,9 +172,10 @@ one deck and one signed-in caller.
    is fine, because reads already treat them as gone.
 
 10. **Optional: an image bucket**, for tools that hand Google an image the
-    server made (Google fetches inserted images from a URL). Without it the
-    server still starts and plans still work; only those image calls fail,
-    with an error naming `SLIDES_MCP_IMAGE_BUCKET`. Each image is uploaded
+    server made (Google fetches inserted images from a URL); today that is
+    `place_image` with `svg`. Without it the server still starts and plans
+    still work; only those image calls fail, with an error naming
+    `SLIDES_MCP_IMAGE_BUCKET`. `place_image` with `image_url` never needs it. Each image is uploaded
     under a random name, given to Google as a signed URL valid for 5 minutes,
     and deleted straight after the write. A lifecycle rule deleting objects
     older than 1 day (the smallest age GCS allows) catches anything missed.
@@ -208,6 +209,24 @@ one deck and one signed-in caller.
     Set `SLIDES_MCP_IMAGE_BUCKET=<IMAGE_BUCKET>` on the service, without the
     `gs://`. The bucket stays private: a signed URL is the only way to read an
     object, and it is unguessable and short-lived.
+
+    **The signed URL stays in the deck.** Google stores the URL it fetched as
+    the image's `sourceUrl`, and anyone who can read the deck through the API
+    can see it. It names the bucket, the object and, in `x-goog-credential`,
+    the service account's email. The URL is useless once it expires and the
+    object is gone, but the email stays visible to everyone the deck is
+    shared with.
+
+    To check signing by hand, impersonating the service account, pass the
+    bucket's region; without it `gcloud` first reads the bucket's metadata,
+    which needs `storage.buckets.get`, a permission `objectAdmin` lacks:
+    ```
+    echo probe | gcloud storage cp - gs://<IMAGE_BUCKET>/probe.txt
+    gcloud storage sign-url gs://<IMAGE_BUCKET>/probe.txt \
+      --impersonate-service-account=<SERVICE_ACCOUNT> \
+      --region=<REGION> --duration=5m
+    gcloud storage rm gs://<IMAGE_BUCKET>/probe.txt
+    ```
 
 ## The Google OAuth consent screen and Web client
 
@@ -267,7 +286,9 @@ cd slides-mcp
 
 The image installs the dependencies pinned in `uv.lock`, not the PyPI
 release, which would ignore the lockfile. It runs `slides-mcp serve-http` on
-`python:3.12-slim-bookworm` as a non-root user.
+`python:3.12-slim-bookworm` as a non-root user, plus `fonts-liberation2`:
+the slim image has no fonts, and without them `place_image` drops every text
+element of an SVG (see `docs/traps/svg-text-vanishes-in-slim-image.md`).
 
 **Work out `<SERVICE_URL>` before the first deploy.** Cloud Run's URL is
 `https://<SERVICE>-<PROJECT_NUMBER>.<REGION>.run.app`, so with the service
