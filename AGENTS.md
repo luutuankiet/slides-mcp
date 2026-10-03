@@ -15,7 +15,8 @@ caller signs in with their own Google account.
   docstring to the client on connect, so a docstring edit changes agent
   behaviour. Keep them true.
 - **Writes are legwork, not authorship.** Full slide authoring was cut in
-  v2.0.0; don't add creative-layout tools (see `docs/adr/`).
+  v2.0.0; don't add creative-layout tools (see `docs/adr/`). Placing content
+  the agent supplies at a position the deck defines is legwork (`docs/adr/0009`).
 - **Every write goes through `writes.apply_batch`.** Destructive request kinds
   need `confirm_destructive=True`; convenience tools build requests and delegate
   to `exec_batch_update`, and deck scripts send each phase through the same
