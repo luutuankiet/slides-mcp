@@ -13,7 +13,9 @@ clicked through, and instance sizing waits for measurements. Steps 9 and 10
 of the one-time setup were added later: the TTL command was checked against
 `gcloud`'s help, and with step 10's grants in place an image was uploaded,
 fetched anonymously through a URL signed as the service account, and deleted,
-on 2026-10-03.
+on 2026-10-03. The same round trip then ran inside the image as a Cloud Run
+job under the service account, so signing went through `signBlob` exactly as
+the service does.
 
 Placeholders used below:
 
