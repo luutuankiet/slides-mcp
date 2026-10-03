@@ -15,6 +15,7 @@ from token.json; HTTP mode builds one per call from the caller's token.
 from __future__ import annotations
 
 import re
+import threading
 import urllib.request
 from functools import cache
 from typing import Any
@@ -101,10 +102,28 @@ def _slides_service():
     return _stdio_service()
 
 
-@cache
+_local = threading.local()
+
+
 def _stdio_service():
-    creds = auth.load_credentials()
-    return build("slides", "v1", credentials=creds, cache_discovery=False)
+    # One client per thread: its httplib2 transport is not thread-safe, and
+    # receipts fetch thumbnails from several threads at once.
+    svc = getattr(_local, "service", None)
+    if svc is None:
+        svc = _local.service = build("slides", "v1", credentials=_stdio_credentials(),
+                                     cache_discovery=False)
+    return svc
+
+
+@cache
+def _stdio_credentials():
+    return auth.load_credentials()
+
+
+def _stdio_reset() -> None:
+    """Forget the stdio credentials and this thread's client (tests)."""
+    _stdio_credentials.cache_clear()
+    _local.service = None
 
 
 class SlidesApiError(RuntimeError):

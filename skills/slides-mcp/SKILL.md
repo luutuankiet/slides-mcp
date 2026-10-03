@@ -44,8 +44,11 @@ return {queued: n};
 - Pass data through `input`, never by splicing it into the script string.
 - `await commit()` only when a later step needs to see what an earlier one
   created; each phase is one atomic batch.
-- `render_slides="1-3"` on a real apply returns thumbnails so you can check
-  the result by eye.
+- A real apply returns thumbnails of up to 3 slides it touched, so you can
+  check the result by eye; `render_slides="1-3"` picks the slides instead.
+  Every write tool does this except `write_speaker_notes`. Pass
+  `receipt="off"` on bulk edits you trust, `receipt="large"` to read small
+  text.
 - Read the `warnings`: a font change that drops a weight, or text that will
   likely overflow a fixed-size box.
 

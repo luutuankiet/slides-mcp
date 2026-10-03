@@ -1,12 +1,12 @@
 ---
 title: Deck scripts (run_deck_script)
-covers: how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, what is refused before any API call, where errors and warnings come from
-verified: 2026-09-28
+covers: how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, what is refused before any API call, where errors and warnings come from, the thumbnails a real apply returns
+verified: 2026-10-03
 ---
 
 # Deck scripts
 
-`run_deck_script` (`src/slides_mcp/server.py:823–950`) runs an agent's
+`run_deck_script` (`src/slides_mcp/server.py:973–1112`) runs an agent's
 JavaScript against one deck. The script reads the deck, computes, and queues
 Slides API requests with `emit()`; the server applies them. The deck never
 passes through the agent's context, only the script's return value does.
@@ -102,6 +102,20 @@ did not happen, and says so with `stopped_at_commit`.
 `write_speaker_notes`, and tracks each notes shape so two `setNotes` calls on
 one slide in one phase compose correctly.
 
+## Thumbnails after a real apply
+
+A real apply that succeeded returns thumbnails as a receipt; a dry run or an
+error never does. The slides are `receipt.affected_slide_ids` across every
+phase, in deck order, at most 3, with the rest listed in
+`thumbnails.not_shown_slide_ids`. `render_slides` overrides that list with an
+explicit selector, still capped at 6. `receipt` sets the size: `medium`
+(default), `large`, or `off` for none, even when `render_slides` is given.
+
+The tool then returns a list, the JSON body as text followed by the images,
+instead of the plain dict. A failed thumbnail is a warning and never an
+error. Rendering is shared with `exec_batch_update`; see the Receipts section
+of `write-wedge.md` for concurrency and Google's thumbnail quota.
+
 ## Errors, warnings and logs
 
 - Error kinds: `syntax` and `script` (with `line` and `column` in the
@@ -123,4 +137,5 @@ one slide in one phase compose correctly.
 `tests/fake_api.py`, which serves a scrubbed recording of four real slides
 plus hand-built edge cases (transparent box, translucent theme fill, rotated
 label, weighted heading, emoji text, rich notes) and applies the request
-kinds the tests send. No network.
+kinds the tests send. No network. Its `run` helper turns receipts off;
+`tests/unit/test_receipts.py` covers them.

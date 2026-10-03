@@ -156,6 +156,10 @@ class FakeSlides:
         self.reads = 0
         self.fail: slides_api.SlidesApiError | None = None
         self.batch_delay = 0.0
+        # Thumbnails: every (slide_id, size) asked for, and optional hooks.
+        self.thumbnails: list[tuple[str, str]] = []
+        self.thumbnail_fail: dict[str, Exception] = {}
+        self.thumbnail_hook: Any = None
 
     # --- API surface -----------------------------------------------------
     def get_presentation(self, deck_id: str, fields: str | None = None) -> dict[str, Any]:
@@ -175,7 +179,12 @@ class FakeSlides:
         return {"presentationId": deck_id, "replies": replies}
 
     def get_thumbnail_bytes(self, deck_id: str, slide_id: str, size: str = "MEDIUM") -> bytes:
-        return b"\x89PNG fake " + slide_id.encode()
+        self.thumbnails.append((slide_id, size))
+        if self.thumbnail_hook:
+            self.thumbnail_hook(slide_id)
+        if err := self.thumbnail_fail.get(slide_id):
+            raise err
+        return b"\x89PNG fake " + size.encode() + b" " + slide_id.encode()
 
     # --- tiny mutation model ----------------------------------------------
     def _elements(self) -> dict[str, dict[str, Any]]:

@@ -31,6 +31,7 @@ from . import (
     normalize,
     notes_md,
     projection,
+    receipts,
     scripting,
     skill_bundle,
     slides_api,
@@ -469,7 +470,8 @@ def exec_batch_update(
     dry_run: bool = False,
     confirm_destructive: bool = False,
     post_state: PostStateMode = "summary",
-) -> dict[str, Any]:
+    receipt: receipts.Receipt = "medium",
+) -> Any:
     """Apply Slides API Requests; return result + multi-granularity post-state.
 
     For edits that depend on what is in the deck (restyle every title, swap a
@@ -511,12 +513,27 @@ def exec_batch_update(
                               "summary"  — deck_outline + summary slides[touched]
                                            (default)
                               "outline"  — deck_outline only
-                              "none"     — action receipt only (no re-read)
+                              "none"     — apply result only (no re-read
+                                           unless a receipt is attached)
+      receipt:              Thumbnails of the touched slides, attached as
+                            images after a real apply:
+                              "medium"   — 800x450, about 480 tokens each
+                                           (default)
+                              "large"    — 1600x900, for reading small text
+                              "off"      — none; use for bulk edits you
+                                           already trust
+                            At most 3 slides; the rest are listed in
+                            `thumbnails.not_shown_slide_ids`. A failed
+                            thumbnail is a warning, never an error: the
+                            write has landed.
 
     Returns (always):
       {applied_request_count, request_kinds, replies, warnings, isError}
     Returns (when post_state != "none"):
       + {affected_slide_ids, post_state: {deck_outline, slides?}}
+    Returns (when a receipt is attached):
+      + {thumbnails: {size, slide_ids, not_shown_slide_ids?, hint?}}, sent
+      as a JSON text block followed by one image per rendered slide.
 
     Raises:
       ValueError on empty `requests` or invalid `post_state`.
@@ -524,6 +541,28 @@ def exec_batch_update(
         usually means the OAuth token has `presentations.readonly` scope only
         (the v2 default) — re-run `slides-mcp-auth` with a fresh consent
         prompt to mint a token with write scope.
+    """
+    receipts.check(receipt)
+    out, touched = _apply_requests(
+        deck_url, requests, dry_run=dry_run, confirm_destructive=confirm_destructive,
+        post_state=post_state, want_slides=receipt != "off",
+    )
+    return _attach_receipt(out, deck_url, touched, receipt)
+
+
+def _apply_requests(
+    deck_url: str,
+    requests: list[dict],
+    *,
+    dry_run: bool,
+    confirm_destructive: bool,
+    post_state: str,
+    want_slides: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    """`exec_batch_update` without the receipt.
+
+    Returns the reply and, after a real apply that re-read the deck, the
+    touched slides that still exist, in deck order.
     """
     if post_state not in ("full", "summary", "outline", "none"):
         raise ValueError(
@@ -544,7 +583,7 @@ def exec_batch_update(
             "destructive_kinds_detected": sorted(set(destructive)),
             "warnings": [],
             "isError": False,
-        }
+        }, []
 
     if destructive and not confirm_destructive:
         return {
@@ -556,13 +595,26 @@ def exec_batch_update(
                 f"Re-call with confirm_destructive=True to proceed."
             ],
             "isError": True,
-        }
+        }, []
 
     deck_id = slides_api.deck_id_from_url(deck_url)
     api_response = writes.apply_batch(deck_id, requests, tool="exec_batch_update")
 
     replies = api_response.get("replies", []) or []
 
+    if post_state == "none" and not want_slides:
+        return {
+            "applied_request_count": len(requests),
+            "request_kinds": request_kinds,
+            "replies": replies,
+            "warnings": [],
+            "isError": False,
+        }, []
+
+    # Re-read deck for post-state projection (single FieldMask GET serves both layers)
+    prez = slides_api.get_presentation(deck_id)
+    affected_slide_ids = _extract_affected_slide_ids(requests, replies, prez)
+    touched = receipts.in_deck_order(affected_slide_ids, prez)
     if post_state == "none":
         return {
             "applied_request_count": len(requests),
@@ -570,11 +622,7 @@ def exec_batch_update(
             "replies": replies,
             "warnings": [],
             "isError": False,
-        }
-
-    # Re-read deck for post-state projection (single FieldMask GET serves both layers)
-    prez = slides_api.get_presentation(deck_id)
-    affected_slide_ids = _extract_affected_slide_ids(requests, replies, prez)
+        }, touched
 
     deck_outline = _project_deck_outline(prez, deck_id=deck_id)
     post_state_envelope: dict[str, Any] = {"deck_outline": deck_outline}
@@ -610,7 +658,27 @@ def exec_batch_update(
         "affected_slide_ids": affected_slide_ids,
         "post_state": post_state_envelope,
         "isError": False,
-    }
+    }, touched
+
+
+def _attach_receipt(
+    out: dict[str, Any],
+    deck_url: str,
+    slide_ids: list[str],
+    receipt: str,
+    *,
+    limit: int = receipts.MAX_SLIDES,
+) -> Any:
+    """`out` plus thumbnails of `slide_ids`, or `out` alone when there are none."""
+    if receipt == "off" or out.get("isError") or not slide_ids:
+        return out
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    field, pngs, warnings = receipts.render(deck_id, slide_ids, receipt, limit=limit)
+    out["thumbnails"] = field
+    out.setdefault("warnings", []).extend(warnings)
+    if not pngs:
+        return out
+    return [json.dumps(out, ensure_ascii=False), *(Image(data=p, format="png") for p in pngs)]
 
 
 # 16:9 Google Slides standard deck dimensions in EMU (1 inch = 914400 EMU)
@@ -632,7 +700,8 @@ def add_section_footers(
     overwrite_existing: bool = True,
     confirm_destructive: bool = False,
     post_state: PostStateMode = "summary",
-) -> dict[str, Any]:
+    receipt: receipts.Receipt = "medium",
+) -> Any:
     """Add chapter/section footer to every slide.
 
     Proof tool for the v2.1 write-wedge: takes a section map, builds the
@@ -663,6 +732,9 @@ def add_section_footers(
       confirm_destructive: Required True if `overwrite_existing=True` AND any
                            prior footers exist (deleteObject is destructive).
       post_state:         Forwarded to `exec_batch_update`.
+      receipt:            Thumbnails of up to 3 footered slides, as in
+                          `exec_batch_update`: "medium" (default, about 480
+                          tokens each), "large" or "off".
 
     Returns:
       `exec_batch_update` envelope plus:
@@ -678,6 +750,7 @@ def add_section_footers(
     """
     if not sections:
         raise ValueError("`sections` must be non-empty")
+    receipts.check(receipt)
     if footer_position not in ("bottom-left", "bottom-center", "bottom-right"):
         raise ValueError(
             f"footer_position must be bottom-left|bottom-center|bottom-right; "
@@ -812,19 +885,20 @@ def add_section_footers(
             "isError": False,
         }
 
-    # Delegate to exec_batch_update for fire + post-state
-    result = exec_batch_update(
-        deck_url=deck_url,
-        requests=requests,
+    # Same path as exec_batch_update: fire + post-state, then the receipt
+    result, touched = _apply_requests(
+        deck_url,
+        requests,
         dry_run=False,
         confirm_destructive=confirm_destructive,
         post_state=post_state,
+        want_slides=receipt != "off",
     )
     result["_proof_tool"] = "add_section_footers"
     result["sections_applied"] = len(sections)
     result["footers_added"] = footers_added
     result["skipped_slide_ids"] = skipped
-    return result
+    return _attach_receipt(result, deck_url, touched, receipt)
 
 
 @_tool()
@@ -884,9 +958,11 @@ def write_speaker_notes(
     # An append never deletes existing text; its only possible destructive
     # kind is un-bulleting the lines it just inserted.
     safe_append = mode == "append" and notes_md.append_is_safe(requests)
-    result = exec_batch_update(
-        deck_url=deck_id, requests=requests, dry_run=dry_run,
+    # No receipt: a thumbnail cannot show speaker notes.
+    result, _ = _apply_requests(
+        deck_id, requests, dry_run=dry_run,
         confirm_destructive=confirm_destructive or safe_append, post_state="summary",
+        want_slides=False,
     )
     result["slides_written"] = written
     if dry_run:
@@ -907,6 +983,7 @@ async def run_deck_script(
     cpu_timeout_s: float = 30,
     max_requests: int = 5000,
     max_return_bytes: int = 8192,
+    receipt: receipts.Receipt = "medium",
 ) -> Any:
     """Run a JavaScript script against one deck: read, compute and edit in one call.
 
@@ -970,8 +1047,14 @@ async def run_deck_script(
       dry_run:             Default true. Set false to apply.
       confirm_destructive: Allow destructive request kinds.
       include_requests:    Include the full request list in the response.
-      render_slides:       Slide selector (as in read_slides); after a real
-                           apply, attach up to 6 thumbnails.
+      render_slides:       Slide selector (as in read_slides) overriding which
+                           slides the receipt shows; up to 6.
+      receipt:             After a real apply (never a dry run), attach
+                           thumbnails of up to 3 touched slides: "medium"
+                           (default, 800x450, about 480 tokens each),
+                           "large" (1600x900) or "off". Others are listed in
+                           `thumbnails.not_shown_slide_ids`. A failed
+                           thumbnail is a warning; the write has landed.
       timeout_s:           Overall wall clock incl. every commit and
                            thumbnail. Default 300, max 1800.
       cpu_timeout_s:       Max pure script time between commits; kills
@@ -985,7 +1068,10 @@ async def run_deck_script(
 
     Returns {result, receipt{applied_request_count, request_kinds,
     affected_slide_ids, destructive_kinds, phases} | preview{...}, warnings,
-    logs, isError, error{kind, message, line, column, request_index}}.
+    logs, isError, error{kind, message, line, column, request_index}}, plus
+    `thumbnails{size, slide_ids, not_shown_slide_ids?, hint?}` when
+    thumbnails are attached (then sent as a JSON text block followed by the
+    images).
     """
     limits, limit_notes = scripting.clamp_limits({
         "timeout_s": timeout_s, "cpu_timeout_s": cpu_timeout_s,
@@ -993,6 +1079,7 @@ async def run_deck_script(
     })
     if not isinstance(script, str) or not script.strip():
         raise ValueError("`script` must be non-empty JavaScript")
+    receipts.check(receipt)
     deck_id = slides_api.deck_id_from_url(deck_url)
     if not dry_run and (msg := writes.write_scope_error()):
         return {"deck_id": deck_id, "dry_run": False, "isError": True,
@@ -1007,21 +1094,22 @@ async def run_deck_script(
     deck_after = out.pop("_deck_after", None)
     if limit_notes:
         out.setdefault("warnings", []).extend(limit_notes)
-    if dry_run or out.get("isError") or render_slides is None:
+    if dry_run or out.get("isError") or receipt == "off":
         return out
 
-    def thumbs() -> list[Image]:
+    def attach() -> Any:
         prez = deck_after or slides_api.get_presentation(deck_id)
+        if render_slides is None:
+            touched = (out.get("receipt") or {}).get("affected_slide_ids") or []
+            return _attach_receipt(out, deck_id, receipts.in_deck_order(touched, prez), receipt)
         ids = _resolve_slide_ids(prez, render_slides)[:scripting.MAX_THUMBNAILS]
-        return [Image(data=slides_api.get_thumbnail_bytes(deck_id, sid), format="png")
-                for sid in ids]
+        return _attach_receipt(out, deck_id, ids, receipt, limit=scripting.MAX_THUMBNAILS)
 
     try:
-        images = await anyio.to_thread.run_sync(thumbs)
+        return await anyio.to_thread.run_sync(attach)
     except Exception as e:  # noqa: BLE001 - thumbnails are best effort after a write
         out.setdefault("warnings", []).append(f"thumbnails failed: {e}")
         return out
-    return [json.dumps(out, ensure_ascii=False), *images]
 
 
 def main() -> None:

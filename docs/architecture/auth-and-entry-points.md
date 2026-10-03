@@ -1,7 +1,7 @@
 ---
 title: Auth and entry points
 covers: where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup, how HTTP mode (serve-http) picks up each caller's Google token
-verified: 2026-10-01
+verified: 2026-10-03
 ---
 
 # Auth and entry points
@@ -60,10 +60,12 @@ re-consent hint.
 
 ## Service object
 
-`slides_api._slides_service()` (`slides_api.py:95–107`) is the one place
-credentials enter. In stdio mode it returns a client built once per process
-(`_stdio_service`, `functools.cache`), so a token replaced on disk is not
-picked up until the server restarts.
+`slides_api._slides_service()` (`slides_api.py:96–126`) is the one place
+credentials enter. In stdio mode it loads token.json once per process
+(`_stdio_credentials`, `functools.cache`), so a token replaced on disk is not
+picked up until the server restarts. The client built from it is kept per
+thread (`_stdio_service`), because its HTTP transport is not thread-safe and
+write receipts fetch thumbnails from several threads at once.
 
 `auth_status` returns path, existence, scopes, the last 8 characters of the
 client id, whether a refresh token exists, and expiry. It never returns the
@@ -82,7 +84,9 @@ from fastmcp's request context, with no refresh token. Nothing is cached, and
 `token.json` is never read; a call with no caller raises `NotSignedInError`.
 Refreshing the caller's Google grant is the sign-in proxy's job. Worker threads
 (`anyio.to_thread.run_sync`, used by `run_deck_script` and thumbnails) inherit
-the request context, so every phase runs as the same caller. Why this is a
+the request context, so every phase runs as the same caller. Receipt
+thumbnails run in a plain thread pool, so `receipts.render` copies the context
+into each worker itself. Why this is a
 context variable rather than a parameter: `docs/adr/0007-caller-credentials-from-request-context.md`.
 
 Other HTTP-mode differences:

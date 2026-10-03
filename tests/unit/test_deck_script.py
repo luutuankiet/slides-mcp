@@ -15,6 +15,8 @@ DECK = "deck_fixture"
 
 
 async def run(script: str, **kw):
+    # Receipts are covered in test_receipts; here a reply is always the JSON body.
+    kw.setdefault("receipt", "off")
     return await run_deck_script(deck_url=DECK, script=script, **kw)
 
 
@@ -277,7 +279,7 @@ async def test_read_only_token_refused_on_apply_not_dry_run(fake, monkeypatch):
 
 async def test_thumbnails_attached_after_apply(fake):
     out = await run("emit(setFill('stat_box', '#000000'))", dry_run=False,
-                    render_slides=["slide_cases"])
+                    render_slides=["slide_cases"], receipt="medium")
     assert isinstance(out, list)
     receipt = json.loads(out[0])
     assert receipt["receipt"]["applied_request_count"] == 1
