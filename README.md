@@ -76,8 +76,8 @@ Two tools for legwork-shaped edits. Read tools above are still the primary inter
 
 | Tool | Purpose |
 |------|---------|
-| `exec_batch_update(deck_url, requests, dry_run?, confirm_destructive?, post_state?)` | Raw passthrough to Google Slides `batchUpdate`. Agent composes the Request list. Returns Slides API replies + multi-granularity post-state envelope. |
-| `add_section_footers(deck_url, sections, template?, footer_position?, overwrite_existing?, confirm_destructive?, post_state?)` | Adds a chapter/section footer (e.g. "Section 2/4 · prev: Discovery · next: Build") to every slide. Idempotent re-runs via deterministic `slides_mcp_footer_*` objectIds. |
+| `exec_batch_update(deck_url, requests, dry_run?, confirm_destructive?, post_state?, receipt?)` | Raw passthrough to Google Slides `batchUpdate`. Agent composes the Request list. Returns Slides API replies + multi-granularity post-state envelope + thumbnails of up to 3 touched slides (`receipt`: `medium` default, `large`, `off`). |
+| `add_section_footers(deck_url, sections, template?, footer_position?, overwrite_existing?, confirm_destructive?, post_state?, receipt?)` | Adds a chapter/section footer (e.g. "Section 2/4 · prev: Discovery · next: Build") to every slide. Idempotent re-runs via deterministic `slides_mcp_footer_*` objectIds. |
 
 ### Verify-after-write multi-granularity return
 
@@ -157,7 +157,9 @@ return {done: true};
   `confirm_destructive=true`.
 - **Warnings** for font changes that drop a weight, and for text that will
   likely overflow a fixed-size box.
-- **`render_slides`** attaches up to six thumbnails after a real apply.
+- **Thumbnails after a real apply** of up to 3 touched slides, like every
+  write tool; `render_slides` picks up to six slides instead, and
+  `receipt="off"` turns them off.
 - **Sandbox.** Embedded V8 (`mini-racer`) in a child process per call, with no
   filesystem, network, imports or timers. `cpu_timeout_s` (default 30 s)
   kills runaway loops, `timeout_s` (default 300 s) bounds the whole call. The

@@ -1,7 +1,7 @@
 ---
 title: Deploying the shared server to Cloud Run
-summary: the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings, Google OAuth client), how a release tag is built and deployed with gcloud run deploy --source, and how to check it is up
-verified: 2026-10-01
+summary: the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings, Google OAuth client), how a release tag is built and deployed with gcloud run deploy --source, how to check it is up, and the shared thumbnail quota
+verified: 2026-10-03
 ---
 
 # Deploying the shared server to Cloud Run
@@ -277,6 +277,18 @@ When those pass but signing in fails, Google's error page names the setting:
 | rotating the Google OAuth client secret | everyone signs in again: the server-token signing key is derived from it |
 | deleting the auth database | everyone signs in again (blocked by delete protection) |
 | Google refusing a refresh (revoked, suspended, unused for 6 months) | that one person signs in again |
+
+## Thumbnail quota is shared by the whole team
+
+Google allows **300 slide-thumbnail requests a minute per project** and 60 a
+minute per user. Every caller's thumbnails count against the project that owns
+the OAuth client, and they come from two places: `render_thumbnail`, and the
+receipt every write tool attaches (up to 3 thumbnails per write by default).
+
+A thumbnail refused for quota (`429`) does not fail the write. The reply
+carries a warning, the write stays applied, and slides-mcp does not retry. If
+a busy team hits the project limit, have agents pass `receipt="off"` on bulk
+edits.
 
 ## Cost
 
