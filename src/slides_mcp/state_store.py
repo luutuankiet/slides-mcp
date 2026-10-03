@@ -30,6 +30,10 @@ class ImageHostingUnavailable(RuntimeError):
     """No bucket to host a temporary image in: stdio mode, or the bucket is unset."""
 
 
+class ImageSigningUnavailable(ImageHostingUnavailable):
+    """The server's credentials can neither sign a URL nor name a service account to sign as."""
+
+
 @dataclass(frozen=True)
 class HostedImage:
     url: str     # short-lived URL Google can fetch the image from
@@ -182,6 +186,12 @@ def _signing_kwargs(storage_client) -> dict[str, str]:
     creds = storage_client._credentials
     if isinstance(creds, Signing):
         return {}
+    if not hasattr(creds, "service_account_email"):
+        raise ImageSigningUnavailable(
+            "This server cannot sign a URL for the image: it runs with credentials that "
+            "hold no private key and belong to no service account (for example a user "
+            "account). Run it as a service account that can sign as itself; see "
+            "docs/deploying-to-cloud-run.md, one-time setup step 10.")
     if not creds.valid:
         creds.refresh(Request())
     return {"service_account_email": creds.service_account_email,

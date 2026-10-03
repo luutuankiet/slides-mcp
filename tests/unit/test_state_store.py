@@ -145,6 +145,18 @@ def test_image_is_not_left_behind_when_signing_fails(clock):
     assert storage.the_bucket.objects == {}
 
 
+def test_credentials_that_cannot_sign_get_a_clear_error(clock):
+    # A user account's credentials: no private key and no service account to sign as.
+    storage = _FakeStorage()
+    storage._credentials = type("UserCredentials", (), {"valid": True, "token": "t"})
+    store = state_store.HostedStateStore(database="slides-mcp-auth", image_bucket="images",
+                                         clock=clock, storage_client=storage)
+    with pytest.raises(state_store.ImageSigningUnavailable,
+                       match=r"service account.*deploying-to-cloud-run\.md.*step 10"):
+        store.put_image(b"\x89PNG", content_type="image/png")
+    assert storage.the_bucket.objects == {}
+
+
 def test_hosted_store_without_a_bucket_names_the_missing_setting(clock):
     store = state_store.HostedStateStore(database="slides-mcp-auth", image_bucket=None,
                                          clock=clock)
