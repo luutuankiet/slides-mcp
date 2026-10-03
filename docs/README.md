@@ -29,6 +29,8 @@ crashing.
 
 | symptom | page | area | verified |
 |---|---|---|---|
+|  | [custom-shape-type-creates-invisible-shape](traps/custom-shape-type-creates-invisible-shape.md) |  | 2026-10-03 |
+|  | [generic-font-family-renders-as-serif](traps/generic-font-family-renders-as-serif.md) |  | 2026-10-03 |
 |  | [image-replace-matching-nothing-returns-success](traps/image-replace-matching-nothing-returns-success.md) |  | 2026-10-03 |
 |  | [svg-text-vanishes-in-slim-image](traps/svg-text-vanishes-in-slim-image.md) |  | 2026-10-03 |
 
