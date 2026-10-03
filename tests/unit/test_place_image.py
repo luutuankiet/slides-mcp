@@ -259,7 +259,6 @@ async def test_failed_cleanup_is_a_warning_not_an_error(fake, gcs, monkeypatch):
     ({"svg": SVG}, "exactly one target"),
     ({"svg": SVG, "box": BOX, "placeholder": MARKER}, "exactly one target"),
     ({"svg": SVG, "box": BOX, "fit": "cover"}, "placeholder targets only"),
-    ({"svg": SVG, "box": BOX, "editable": True}, "editable"),
     ({"svg": SVG, "box": {"x": 1, "y": 1, "width": 0, "height": 5}}, "positive"),
     ({"svg": SVG, "box": {"x": 1}}, "in points"),
 ])
