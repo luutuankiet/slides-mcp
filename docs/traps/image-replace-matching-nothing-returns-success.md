@@ -42,6 +42,11 @@ Treat a reply with no `occurrencesChanged` (or zero) as a failure and tell the
 caller the marker was not found on that slide. Put marker boxes on the slide
 itself, never on its layout or master.
 
+`place_image` does both: it looks for the marker in the slide's own shapes
+before uploading anything, and treats a reply without `occurrencesChanged`
+as error kind `marker` (`_place_image` in `src/slides_mcp/server.py`). It
+never sends an unscoped replace.
+
 ## How to check
 
 Send the request and read `replies[i].replaceAllShapesWithImage.occurrencesChanged`.

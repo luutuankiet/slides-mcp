@@ -25,6 +25,11 @@ _STDIO_IMAGE_MESSAGE = (
     "(slides-mcp serve-http with SLIDES_MCP_IMAGE_BUCKET set); this server runs over "
     "stdio. Pass a public image URL instead, or use the hosted server.")
 
+_NO_BUCKET_MESSAGE = (
+    "SLIDES_MCP_IMAGE_BUCKET is not set on this server, so it has nowhere to "
+    "host an image for Google to fetch. Ask the deployer to set it (see "
+    "docs/deploying-to-cloud-run.md), or pass a public image URL instead.")
+
 
 class ImageHostingUnavailable(RuntimeError):
     """No bucket to host a temporary image in: stdio mode, or the bucket is unset."""
@@ -78,6 +83,9 @@ class MemoryStateStore:
 
     def expire_plan(self, plan_id: str) -> None:
         self._plans.pop(plan_id, None)
+
+    def check_image_hosting(self) -> None:
+        raise ImageHostingUnavailable(_STDIO_IMAGE_MESSAGE)
 
     def put_image(self, data: bytes, *, content_type: str) -> HostedImage:
         raise ImageHostingUnavailable(_STDIO_IMAGE_MESSAGE)
@@ -134,12 +142,13 @@ class HostedStateStore:
 
     # ---- images
 
-    def _bucket(self):
+    def check_image_hosting(self) -> None:
+        """Raise ImageHostingUnavailable now, before any work, when there is no bucket."""
         if not self.image_bucket:
-            raise ImageHostingUnavailable(
-                "SLIDES_MCP_IMAGE_BUCKET is not set on this server, so it has nowhere to "
-                "host an image for Google to fetch. Ask the deployer to set it (see "
-                "docs/deploying-to-cloud-run.md), or pass a public image URL instead.")
+            raise ImageHostingUnavailable(_NO_BUCKET_MESSAGE)
+
+    def _bucket(self):
+        self.check_image_hosting()
         if self._storage is None:
             from google.cloud import storage
 

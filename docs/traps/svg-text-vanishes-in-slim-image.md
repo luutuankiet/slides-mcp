@@ -37,8 +37,15 @@ resolve and every label renders. A named family the image lacks (for example
 Characters outside Liberation's coverage (CJK, for example) render as empty
 boxes.
 
+The `Dockerfile`'s runtime stage installs it. `place_image` renders with
+`log_information=True` in a child process (`src/slides_mcp/svg_raster.py`)
+and turns each `No match for ... font-family` line into a reply warning, so
+a server without fonts says so instead of returning a label-less diagram.
+
 ## How to check
 
 Render an SVG with a `<text>` element in the image and compare the PNG with
 one rendered from the same SVG with the text removed. Equal byte counts mean
-the text was dropped.
+the text was dropped. Or call `svg_raster.rasterise(svg, w, h)` inside the
+image and read `warnings`; `system_fonts=False` reproduces the no-font case
+anywhere.

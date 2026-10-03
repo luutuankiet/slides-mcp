@@ -174,8 +174,7 @@ class FakeSlides:
         self.batches.append(copy.deepcopy(requests))
         replies: list[dict[str, Any]] = []
         for req in requests:
-            self._apply(req)
-            replies.append({})
+            replies.append(self._apply(req) or {})
         return {"presentationId": deck_id, "replies": replies}
 
     def get_thumbnail_bytes(self, deck_id: str, slide_id: str, size: str = "MEDIUM") -> bytes:
@@ -203,7 +202,7 @@ class FakeSlides:
                 walk(el)
         return idx
 
-    def _apply(self, req: dict[str, Any]) -> None:
+    def _apply(self, req: dict[str, Any]) -> dict[str, Any] | None:
         (kind, body), = req.items()
         els = self._elements()
         el = els.get(body.get("objectId", ""))
@@ -233,3 +232,35 @@ class FakeSlides:
             for s in self.deck["slides"]:
                 s["pageElements"] = [e for e in s.get("pageElements") or []
                                      if e["objectId"] != body["objectId"]]
+        elif kind == "createImage":
+            ep = body["elementProperties"]
+            oid = body.get("objectId") or f"image_{len(self.batches)}"
+            for s in self.deck["slides"]:
+                if s["objectId"] == ep["pageObjectId"]:
+                    s.setdefault("pageElements", []).append({
+                        "objectId": oid, "size": ep.get("size"),
+                        "transform": ep.get("transform"),
+                        "image": {"sourceUrl": body["url"]}})
+            return {"createImage": {"objectId": oid}}
+        elif kind == "replaceAllShapesWithImage":
+            # Like Slides: a scoped replace that matches nothing answers {}.
+            marker = body["containsText"]["text"]
+            pages = body.get("pageObjectIds")
+            changed = 0
+            for s in self.deck["slides"]:
+                if pages and s["objectId"] not in pages:
+                    continue
+                for i, e in enumerate(s.get("pageElements") or []):
+                    text = "".join(te.get("textRun", {}).get("content", "")
+                                   for te in e.get("shape", {}).get("text", {})
+                                   .get("textElements", []))
+                    if marker in text:
+                        s["pageElements"][i] = {
+                            "objectId": e["objectId"], "size": e.get("size"),
+                            "transform": e.get("transform"),
+                            "image": {"sourceUrl": body["imageUrl"]}}
+                        changed += 1
+            if changed:
+                return {"replaceAllShapesWithImage": {"occurrencesChanged": changed}}
+            return {"replaceAllShapesWithImage": {}}
+        return None

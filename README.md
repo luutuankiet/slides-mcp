@@ -34,6 +34,7 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 | `write_speaker_notes(deck_url, notes, mode?, dry_run?, confirm_destructive?)` | **(v2.2)** Speaker notes from Markdown for many slides in one batch; real bold, italic, headers and bullets |
 | `run_deck_script(deck_url, script, input?, dry_run?, ...)` | **(v2.2)** Run JavaScript against the deck in a sandbox: read, compute and edit in one call |
 | `install_skill()` | **(v2.3)** Returns the shipped agent skill (every file plus install steps) so the agent can install it for the user. No deck, no Google sign-in |
+| `place_image(deck_url, slide_id, svg? \| image_url?, placeholder? \| box?, fit?, confirm_destructive?, receipt?)` | **(v2.5)** Put an SVG diagram (rasterised server-side; hosted server only) or a public image URL into a marker placeholder on the slide or an explicit box |
 
 ## Compared with Google's Slides MCP server
 

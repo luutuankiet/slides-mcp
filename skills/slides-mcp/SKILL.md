@@ -16,6 +16,7 @@ A reference for using `exec_batch_update` to make legwork-shaped edits to Google
 | Speaker notes, with formatting | `write_speaker_notes` (Markdown in, real bold/italic/headers/bullets out) |
 | A handful of requests whose ids you already know | `exec_batch_update` |
 | A footer on every slide | `add_section_footers` |
+| A diagram (SVG you write) or a picture (public URL) on a slide | `place_image` |
 
 **Prefer `run_deck_script` whenever you would otherwise read the deck, compute
 requests in your head and paste them back.** The script reads the deck inside
@@ -220,6 +221,42 @@ colleague's edits since the dry run are picked up. Plans last 1 hour and apply
 once.
 
 `styleRuns` keeps each run's weight across the font change.
+
+### Example 4: Put a diagram into the user's placeholder
+
+The user has a reference slide with a box holding the text `{{DIAGRAM}}`
+(no outline: the image inherits it). Copy the slide, then place SVG into the
+copy's box:
+
+```python
+exec_batch_update(deck_url, [
+    {"duplicateObject": {"objectId": "ref_slide", "objectIds": {"ref_slide": "flow_slide"}}},
+])  # the copy's marker box is now on flow_slide
+
+place_image(
+    deck_url,
+    slide_id="flow_slide",
+    placeholder="{{DIAGRAM}}",
+    svg="""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200">
+      <rect x="20" y="60" width="160" height="80" rx="12" fill="#e3ecfa" stroke="#3366cc"/>
+      <rect x="420" y="60" width="160" height="80" rx="12" fill="#e6f4ea" stroke="#188038"/>
+      <line x1="180" y1="100" x2="420" y2="100" stroke="#444" stroke-width="3"/>
+      <text x="100" y="107" font-family="sans-serif" font-size="22" text-anchor="middle">Draft</text>
+      <text x="500" y="107" font-family="sans-serif" font-size="22" text-anchor="middle">Review</text>
+    </svg>""",
+    confirm_destructive=True,  # replacing the marker box is a destructive kind
+)
+```
+
+- The image keeps the box's object id; the reply's thumbnail shows it in place.
+- Use `sans-serif`, `serif` or `monospace`. Text the server has no font for
+  is listed in `warnings`.
+- `error.kind == "marker"` means the marker is not in a shape on that slide.
+  A marker on the slide's layout or master cannot be reached.
+- No placeholder? Pass `box={"x": 60, "y": 80, "width": 400, "height": 200}`
+  (points) copied from a reference slide's `read_slides(detail="raw")`.
+- SVG needs the hosted server. `image_url=` with a public PNG, JPEG or GIF
+  works anywhere.
 
 ## Tips
 

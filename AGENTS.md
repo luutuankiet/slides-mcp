@@ -26,7 +26,8 @@ caller signs in with their own Google account.
 ## Layout
 
 ```
-src/slides_mcp/server.py      — all 10 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/server.py      — all 11 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/svg_raster.py  - place_image's SVG to PNG, rendered by resvg in a child process
 src/slides_mcp/writes.py      — the one write path: apply_batch, destructive kinds, audit line
 src/slides_mcp/scripting.py   — run_deck_script runtime: limits, worker handle, phases, warnings
 src/slides_mcp/sandbox/       — V8 worker process and the JS prelude scripts see
