@@ -15,11 +15,11 @@ something is implemented.
 
 | page | covers | verified |
 |---|---|---|
-| [Auth and entry points](architecture/auth-and-entry-points.md) | where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup, how HTTP mode (serve-http) picks up each caller's Google token | 2026-10-01 |
-| [Deck scripts (run_deck_script)](architecture/deck-scripts.md) | how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, what is refused before any API call, where errors and warnings come from | 2026-09-28 |
+| [Auth and entry points](architecture/auth-and-entry-points.md) | where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup, how HTTP mode (serve-http) picks up each caller's Google token | 2026-10-03 |
+| [Deck scripts (run_deck_script)](architecture/deck-scripts.md) | how an agent's JavaScript runs against a deck, the read model the script sees, the worker process and its timeouts, commit phases, dry run, applying a dry run by plan_id, what is refused before any API call, where errors and warnings come from, the thumbnails a real apply returns | 2026-10-03 |
 | [Packaging, release and the shipped skill](architecture/packaging-and-release.md) | how a version gets to PyPI and GitHub Releases, what the release workflow checks, where the agent skill that ships with the package lives | 2026-10-01 |
 | [Read path (outline, read, search, thumbnail)](architecture/read-path.md) | how a deck URL becomes the slide dicts an agent sees, where detail modes, selectors, archetypes, titles and speaker notes come from | 2026-09-28 |
-| [Write wedge (exec_batch_update, add_section_footers, write_speaker_notes)](architecture/write-wedge.md) | where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, how section footers are placed, how Markdown notes become requests | 2026-09-28 |
+| [Write wedge (exec_batch_update, add_section_footers, write_speaker_notes, place_image)](architecture/write-wedge.md) | where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises, hosts and places an image, how editable SVG becomes native shapes | 2026-10-03 |
 
 ## Traps
 
@@ -27,7 +27,12 @@ Failure modes that produce no error message, indexed by the symptom you
 would observe. Read before debugging behaviour that is wrong but not
 crashing.
 
-_No pages yet._
+| symptom | page | area | verified |
+|---|---|---|---|
+|  | [custom-shape-type-creates-invisible-shape](traps/custom-shape-type-creates-invisible-shape.md) |  | 2026-10-03 |
+|  | [generic-font-family-renders-as-serif](traps/generic-font-family-renders-as-serif.md) |  | 2026-10-03 |
+|  | [image-replace-matching-nothing-returns-success](traps/image-replace-matching-nothing-returns-success.md) |  | 2026-10-03 |
+|  | [svg-text-vanishes-in-slim-image](traps/svg-text-vanishes-in-slim-image.md) |  | 2026-10-03 |
 
 ## Reference
 
@@ -44,7 +49,7 @@ Long-form pages that belong to no single area.
 
 | page | summary | verified |
 |---|---|---|
-| [Deploying the shared server to Cloud Run](deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings, Google OAuth client), how a release tag is built and deployed with gcloud run deploy --source, and how to check it is up | 2026-10-01 |
+| [Deploying the shared server to Cloud Run](deploying-to-cloud-run.md) | the Google Cloud setup a deployer does once before running slides-mcp as a shared remote server (Firestore database, service account, client secret, settings, Google OAuth client), how a release tag is built and deployed with gcloud run deploy --source, how to check it is up, and the shared thumbnail quota | 2026-10-03 |
 
 ## Decisions
 
@@ -59,5 +64,6 @@ it with a new one rather than editing it.
 - [Keep self-hosting slides-mcp rather than adopt Google's Slides MCP server](adr/0006-keep-self-hosting-over-google-slides-mcp.md)
 - [The caller's Google credentials come from request context, not a parameter](adr/0007-caller-credentials-from-request-context.md)
 - [Point agents at the skill from the raw-requests tool, not from every tool](adr/0008-tools-tell-agents-to-load-the-skill.md)
+- [Image placement is render-and-place legwork, not authorship](adr/0009-image-placement-is-render-and-place-legwork.md)
 
 <!-- END GENERATED INDEX -->

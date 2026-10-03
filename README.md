@@ -34,6 +34,7 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 | `write_speaker_notes(deck_url, notes, mode?, dry_run?, confirm_destructive?)` | **(v2.2)** Speaker notes from Markdown for many slides in one batch; real bold, italic, headers and bullets |
 | `run_deck_script(deck_url, script, input?, dry_run?, ...)` | **(v2.2)** Run JavaScript against the deck in a sandbox: read, compute and edit in one call |
 | `install_skill()` | **(v2.3)** Returns the shipped agent skill (every file plus install steps) so the agent can install it for the user. No deck, no Google sign-in |
+| `place_image(deck_url, slide_id, svg? \| image_url?, placeholder? \| box?, fit?, editable?, confirm_destructive?, receipt?)` | **(v2.5)** Put an SVG diagram (rasterised server-side; hosted server only) or a public image URL into a marker placeholder on the slide or an explicit box. `editable=true` draws a supported subset of SVG as native, editable shapes instead (works over stdio) |
 
 ## Compared with Google's Slides MCP server
 
@@ -76,8 +77,8 @@ Two tools for legwork-shaped edits. Read tools above are still the primary inter
 
 | Tool | Purpose |
 |------|---------|
-| `exec_batch_update(deck_url, requests, dry_run?, confirm_destructive?, post_state?)` | Raw passthrough to Google Slides `batchUpdate`. Agent composes the Request list. Returns Slides API replies + multi-granularity post-state envelope. |
-| `add_section_footers(deck_url, sections, template?, footer_position?, overwrite_existing?, confirm_destructive?, post_state?)` | Adds a chapter/section footer (e.g. "Section 2/4 · prev: Discovery · next: Build") to every slide. Idempotent re-runs via deterministic `slides_mcp_footer_*` objectIds. |
+| `exec_batch_update(deck_url, requests, dry_run?, confirm_destructive?, post_state?, receipt?)` | Raw passthrough to Google Slides `batchUpdate`. Agent composes the Request list. Returns Slides API replies + multi-granularity post-state envelope + thumbnails of up to 3 touched slides (`receipt`: `medium` default, `large`, `off`). |
+| `add_section_footers(deck_url, sections, template?, footer_position?, overwrite_existing?, confirm_destructive?, post_state?, receipt?)` | Adds a chapter/section footer (e.g. "Section 2/4 · prev: Discovery · next: Build") to every slide. Idempotent re-runs via deterministic `slides_mcp_footer_*` objectIds. |
 
 ### Verify-after-write multi-granularity return
 
@@ -157,7 +158,9 @@ return {done: true};
   `confirm_destructive=true`.
 - **Warnings** for font changes that drop a weight, and for text that will
   likely overflow a fixed-size box.
-- **`render_slides`** attaches up to six thumbnails after a real apply.
+- **Thumbnails after a real apply** of up to 3 touched slides, like every
+  write tool; `render_slides` picks up to six slides instead, and
+  `receipt="off"` turns them off.
 - **Sandbox.** Embedded V8 (`mini-racer`) in a child process per call, with no
   filesystem, network, imports or timers. `cpu_timeout_s` (default 30 s)
   kills runaway loops, `timeout_s` (default 300 s) bounds the whole call. The

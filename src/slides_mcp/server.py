@@ -31,9 +31,13 @@ from . import (
     normalize,
     notes_md,
     projection,
+    receipts,
     scripting,
     skill_bundle,
     slides_api,
+    state_store,
+    svg_native,
+    svg_raster,
     writes,
 )
 from .writes import DESTRUCTIVE_KINDS
@@ -469,7 +473,8 @@ def exec_batch_update(
     dry_run: bool = False,
     confirm_destructive: bool = False,
     post_state: PostStateMode = "summary",
-) -> dict[str, Any]:
+    receipt: receipts.Receipt = "medium",
+) -> Any:
     """Apply Slides API Requests; return result + multi-granularity post-state.
 
     For edits that depend on what is in the deck (restyle every title, swap a
@@ -511,12 +516,27 @@ def exec_batch_update(
                               "summary"  — deck_outline + summary slides[touched]
                                            (default)
                               "outline"  — deck_outline only
-                              "none"     — action receipt only (no re-read)
+                              "none"     — apply result only (no re-read
+                                           unless a receipt is attached)
+      receipt:              Thumbnails of the touched slides, attached as
+                            images after a real apply:
+                              "medium"   — 800x450, about 480 tokens each
+                                           (default)
+                              "large"    — 1600x900, for reading small text
+                              "off"      — none; use for bulk edits you
+                                           already trust
+                            At most 3 slides; the rest are listed in
+                            `thumbnails.not_shown_slide_ids`. A failed
+                            thumbnail is a warning, never an error: the
+                            write has landed.
 
     Returns (always):
       {applied_request_count, request_kinds, replies, warnings, isError}
     Returns (when post_state != "none"):
       + {affected_slide_ids, post_state: {deck_outline, slides?}}
+    Returns (when a receipt is attached):
+      + {thumbnails: {size, slide_ids, not_shown_slide_ids?, hint?}}, sent
+      as a JSON text block followed by one image per rendered slide.
 
     Raises:
       ValueError on empty `requests` or invalid `post_state`.
@@ -524,6 +544,29 @@ def exec_batch_update(
         usually means the OAuth token has `presentations.readonly` scope only
         (the v2 default) — re-run `slides-mcp-auth` with a fresh consent
         prompt to mint a token with write scope.
+    """
+    receipts.check(receipt)
+    out, touched = _apply_requests(
+        deck_url, requests, dry_run=dry_run, confirm_destructive=confirm_destructive,
+        post_state=post_state, want_slides=receipt != "off",
+    )
+    return _attach_receipt(out, deck_url, touched, receipt)
+
+
+def _apply_requests(
+    deck_url: str,
+    requests: list[dict],
+    *,
+    dry_run: bool,
+    confirm_destructive: bool,
+    post_state: str,
+    want_slides: bool,
+    tool: str = "exec_batch_update",
+) -> tuple[dict[str, Any], list[str]]:
+    """`exec_batch_update` without the receipt.
+
+    Returns the reply and, after a real apply that re-read the deck, the
+    touched slides that still exist, in deck order.
     """
     if post_state not in ("full", "summary", "outline", "none"):
         raise ValueError(
@@ -544,25 +587,29 @@ def exec_batch_update(
             "destructive_kinds_detected": sorted(set(destructive)),
             "warnings": [],
             "isError": False,
-        }
+        }, []
 
     if destructive and not confirm_destructive:
-        return {
-            "applied_request_count": 0,
-            "request_kinds": request_kinds,
-            "replies": [],
-            "warnings": [
-                f"Refused — destructive kinds detected: {sorted(set(destructive))}. "
-                f"Re-call with confirm_destructive=True to proceed."
-            ],
-            "isError": True,
-        }
+        return _refusal(request_kinds), []
 
     deck_id = slides_api.deck_id_from_url(deck_url)
-    api_response = writes.apply_batch(deck_id, requests, tool="exec_batch_update")
+    api_response = writes.apply_batch(deck_id, requests, tool=tool)
 
     replies = api_response.get("replies", []) or []
 
+    if post_state == "none" and not want_slides:
+        return {
+            "applied_request_count": len(requests),
+            "request_kinds": request_kinds,
+            "replies": replies,
+            "warnings": [],
+            "isError": False,
+        }, []
+
+    # Re-read deck for post-state projection (single FieldMask GET serves both layers)
+    prez = slides_api.get_presentation(deck_id)
+    affected_slide_ids = _extract_affected_slide_ids(requests, replies, prez)
+    touched = receipts.in_deck_order(affected_slide_ids, prez)
     if post_state == "none":
         return {
             "applied_request_count": len(requests),
@@ -570,11 +617,7 @@ def exec_batch_update(
             "replies": replies,
             "warnings": [],
             "isError": False,
-        }
-
-    # Re-read deck for post-state projection (single FieldMask GET serves both layers)
-    prez = slides_api.get_presentation(deck_id)
-    affected_slide_ids = _extract_affected_slide_ids(requests, replies, prez)
+        }, touched
 
     deck_outline = _project_deck_outline(prez, deck_id=deck_id)
     post_state_envelope: dict[str, Any] = {"deck_outline": deck_outline}
@@ -610,7 +653,42 @@ def exec_batch_update(
         "affected_slide_ids": affected_slide_ids,
         "post_state": post_state_envelope,
         "isError": False,
+    }, touched
+
+
+def _refusal(request_kinds: list[str]) -> dict[str, Any]:
+    """The reply to a destructive write sent without confirm_destructive."""
+    destructive = sorted({k for k in request_kinds if k in DESTRUCTIVE_KINDS})
+    return {
+        "applied_request_count": 0,
+        "request_kinds": request_kinds,
+        "replies": [],
+        "warnings": [
+            f"Refused — destructive kinds detected: {destructive}. "
+            f"Re-call with confirm_destructive=True to proceed."
+        ],
+        "isError": True,
     }
+
+
+def _attach_receipt(
+    out: dict[str, Any],
+    deck_url: str,
+    slide_ids: list[str],
+    receipt: str,
+    *,
+    limit: int = receipts.MAX_SLIDES,
+) -> Any:
+    """`out` plus thumbnails of `slide_ids`, or `out` alone when there are none."""
+    if receipt == "off" or out.get("isError") or not slide_ids:
+        return out
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    field, pngs, warnings = receipts.render(deck_id, slide_ids, receipt, limit=limit)
+    out["thumbnails"] = field
+    out.setdefault("warnings", []).extend(warnings)
+    if not pngs:
+        return out
+    return [json.dumps(out, ensure_ascii=False), *(Image(data=p, format="png") for p in pngs)]
 
 
 # 16:9 Google Slides standard deck dimensions in EMU (1 inch = 914400 EMU)
@@ -632,7 +710,8 @@ def add_section_footers(
     overwrite_existing: bool = True,
     confirm_destructive: bool = False,
     post_state: PostStateMode = "summary",
-) -> dict[str, Any]:
+    receipt: receipts.Receipt = "medium",
+) -> Any:
     """Add chapter/section footer to every slide.
 
     Proof tool for the v2.1 write-wedge: takes a section map, builds the
@@ -663,6 +742,9 @@ def add_section_footers(
       confirm_destructive: Required True if `overwrite_existing=True` AND any
                            prior footers exist (deleteObject is destructive).
       post_state:         Forwarded to `exec_batch_update`.
+      receipt:            Thumbnails of up to 3 footered slides, as in
+                          `exec_batch_update`: "medium" (default, about 480
+                          tokens each), "large" or "off".
 
     Returns:
       `exec_batch_update` envelope plus:
@@ -678,6 +760,7 @@ def add_section_footers(
     """
     if not sections:
         raise ValueError("`sections` must be non-empty")
+    receipts.check(receipt)
     if footer_position not in ("bottom-left", "bottom-center", "bottom-right"):
         raise ValueError(
             f"footer_position must be bottom-left|bottom-center|bottom-right; "
@@ -812,19 +895,20 @@ def add_section_footers(
             "isError": False,
         }
 
-    # Delegate to exec_batch_update for fire + post-state
-    result = exec_batch_update(
-        deck_url=deck_url,
-        requests=requests,
+    # Same path as exec_batch_update: fire + post-state, then the receipt
+    result, touched = _apply_requests(
+        deck_url,
+        requests,
         dry_run=False,
         confirm_destructive=confirm_destructive,
         post_state=post_state,
+        want_slides=receipt != "off",
     )
     result["_proof_tool"] = "add_section_footers"
     result["sections_applied"] = len(sections)
     result["footers_added"] = footers_added
     result["skipped_slide_ids"] = skipped
-    return result
+    return _attach_receipt(result, deck_url, touched, receipt)
 
 
 @_tool()
@@ -884,9 +968,11 @@ def write_speaker_notes(
     # An append never deletes existing text; its only possible destructive
     # kind is un-bulleting the lines it just inserted.
     safe_append = mode == "append" and notes_md.append_is_safe(requests)
-    result = exec_batch_update(
-        deck_url=deck_id, requests=requests, dry_run=dry_run,
+    # No receipt: a thumbnail cannot show speaker notes.
+    result, _ = _apply_requests(
+        deck_id, requests, dry_run=dry_run,
         confirm_destructive=confirm_destructive or safe_append, post_state="summary",
+        want_slides=False,
     )
     result["slides_written"] = written
     if dry_run:
@@ -894,10 +980,21 @@ def write_speaker_notes(
     return result
 
 
+_PLAN_GONE = (
+    "No plan with that plan_id for this deck and caller: plans expire after 1 hour, "
+    "are single use, and apply only to the deck (and, on the hosted server, the "
+    "person) they were made for. Run the dry run again to get a new plan_id.")
+
+
+def _plan_error(deck_id: str, dry_run: bool, message: str) -> dict[str, Any]:
+    return {"deck_id": deck_id, "dry_run": dry_run, "isError": True,
+            "error": {"kind": "plan", "message": message}}
+
+
 @_tool()
 async def run_deck_script(
     deck_url: str,
-    script: str,
+    script: str | None = None,
     input: Any = None,  # noqa: A002 - the name agents see
     dry_run: bool = True,
     confirm_destructive: bool = False,
@@ -907,6 +1004,8 @@ async def run_deck_script(
     cpu_timeout_s: float = 30,
     max_requests: int = 5000,
     max_return_bytes: int = 8192,
+    receipt: receipts.Receipt = "medium",
+    plan_id: str | None = None,
 ) -> Any:
     """Run a JavaScript script against one deck: read, compute and edit in one call.
 
@@ -962,16 +1061,28 @@ async def run_deck_script(
     flag font changes that drop an existing weight and size or font changes
     that likely overflow a fixed-size (autofit NONE) box.
 
+    To apply a dry run, pass its `preview.plan_id` with dry_run=false and no
+    script: the stored script and input re-run against the deck as it is now.
+
     Args:
       deck_url:            Slides URL or raw deck ID; the script is bound to it.
       script:              JavaScript source (function body; top-level
-                           `return` and `await` allowed).
+                           `return` and `await` allowed). Omit with plan_id.
       input:               Any JSON value; a JSON string is parsed once.
       dry_run:             Default true. Set false to apply.
+      plan_id:             From a dry run's preview; applies that script and
+                           input (and its limits) once, within 1 hour, to the
+                           same deck. confirm_destructive is still needed here.
       confirm_destructive: Allow destructive request kinds.
       include_requests:    Include the full request list in the response.
-      render_slides:       Slide selector (as in read_slides); after a real
-                           apply, attach up to 6 thumbnails.
+      render_slides:       Slide selector (as in read_slides) overriding which
+                           slides the receipt shows; up to 6.
+      receipt:             After a real apply (never a dry run), attach
+                           thumbnails of up to 3 touched slides: "medium"
+                           (default, 800x450, about 480 tokens each),
+                           "large" (1600x900) or "off". Others are listed in
+                           `thumbnails.not_shown_slide_ids`. A failed
+                           thumbnail is a warning; the write has landed.
       timeout_s:           Overall wall clock incl. every commit and
                            thumbnail. Default 300, max 1800.
       cpu_timeout_s:       Max pure script time between commits; kills
@@ -984,20 +1095,41 @@ async def run_deck_script(
     server-side when the client gives up.
 
     Returns {result, receipt{applied_request_count, request_kinds,
-    affected_slide_ids, destructive_kinds, phases} | preview{...}, warnings,
-    logs, isError, error{kind, message, line, column, request_index}}.
+    affected_slide_ids, destructive_kinds, phases} | preview{plan_id, ...},
+    warnings, logs, isError, error{kind, message, line, column, request_index}}, plus
+    `thumbnails{size, slide_ids, not_shown_slide_ids?, hint?}` when
+    thumbnails are attached (then sent as a JSON text block followed by the
+    images).
     """
     limits, limit_notes = scripting.clamp_limits({
         "timeout_s": timeout_s, "cpu_timeout_s": cpu_timeout_s,
         "max_requests": max_requests, "max_return_bytes": max_return_bytes,
     })
-    if not isinstance(script, str) or not script.strip():
-        raise ValueError("`script` must be non-empty JavaScript")
+    receipts.check(receipt)
     deck_id = slides_api.deck_id_from_url(deck_url)
+    if plan_id is not None and script is not None:
+        return _plan_error(deck_id, dry_run, (
+            "Pass either `script` (to run or dry-run it) or `plan_id` (to apply an "
+            "earlier dry run), not both."))
+    if plan_id is not None and dry_run:
+        return _plan_error(deck_id, dry_run, (
+            "`plan_id` applies an earlier dry run: call again with dry_run=false. "
+            "To preview again, send the script instead."))
+    if plan_id is None:
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("`script` must be non-empty JavaScript")
+        value = scripting.parse_input(input)
     if not dry_run and (msg := writes.write_scope_error()):
         return {"deck_id": deck_id, "dry_run": False, "isError": True,
                 "error": {"kind": "auth", "message": msg}}
-    value = scripting.parse_input(input)
+    # The hosted store is a blocking Firestore round trip: keep it off the loop.
+    store, caller = state_store.current(), auth.caller_id()
+    if plan_id is not None:
+        plan = await anyio.to_thread.run_sync(lambda: store.load_plan(
+            plan_id, deck_id=deck_id, caller=caller))
+        if plan is None:
+            return _plan_error(deck_id, dry_run, _PLAN_GONE)
+        script, value, limits = plan["script"], plan["input"], plan["limits"]
 
     out = await anyio.to_thread.run_sync(lambda: scripting.run(
         deck_id, script, value,
@@ -1007,21 +1139,335 @@ async def run_deck_script(
     deck_after = out.pop("_deck_after", None)
     if limit_notes:
         out.setdefault("warnings", []).extend(limit_notes)
-    if dry_run or out.get("isError") or render_slides is None:
+    if dry_run and not out.get("isError"):
+        out["preview"]["plan_id"] = await anyio.to_thread.run_sync(lambda: store.save_plan(
+            {"script": script, "input": value, "limits": limits},
+            deck_id=deck_id, caller=caller))
+    if plan_id is not None and not out.get("isError"):
+        # Applied: a second apply would repeat the edits on top of themselves.
+        await anyio.to_thread.run_sync(lambda: store.expire_plan(plan_id))
+    if dry_run or out.get("isError") or receipt == "off":
         return out
 
-    def thumbs() -> list[Image]:
+    def attach() -> Any:
         prez = deck_after or slides_api.get_presentation(deck_id)
+        if render_slides is None:
+            touched = (out.get("receipt") or {}).get("affected_slide_ids") or []
+            return _attach_receipt(out, deck_id, receipts.in_deck_order(touched, prez), receipt)
         ids = _resolve_slide_ids(prez, render_slides)[:scripting.MAX_THUMBNAILS]
-        return [Image(data=slides_api.get_thumbnail_bytes(deck_id, sid), format="png")
-                for sid in ids]
+        return _attach_receipt(out, deck_id, ids, receipt, limit=scripting.MAX_THUMBNAILS)
 
     try:
-        images = await anyio.to_thread.run_sync(thumbs)
+        return await anyio.to_thread.run_sync(attach)
     except Exception as e:  # noqa: BLE001 - thumbnails are best effort after a write
         out.setdefault("warnings", []).append(f"thumbnails failed: {e}")
         return out
-    return [json.dumps(out, ensure_ascii=False), *images]
+
+
+Fit = Literal["contain", "cover"]
+_FIT_METHODS = {"contain": "CENTER_INSIDE", "cover": "CENTER_CROP"}
+_GOOGLE_PREFIX_RE = re.compile(r"^(?:Slides API error \d+: )?Invalid requests\[\d+\]\.\w+: ")
+
+
+def _place_error(kind: str, message: str, **extra: Any) -> dict[str, Any]:
+    return {"applied_request_count": 0, "warnings": [], "isError": True,
+            "error": {"kind": kind, "message": message}, **extra}
+
+
+def _marker_missing(marker: str, slide_id: str) -> str:
+    return (f"Marker {marker!r} was not found in any shape on slide {slide_id}. Check the "
+            f"text and the slide id. The marker must be in a shape on the slide itself: "
+            f"a marker on the slide's layout or master is drawn on the slide but cannot "
+            f"be replaced from it.")
+
+
+def _box_pt(box: Any) -> tuple[float, float, float, float]:
+    try:
+        x, y, w, h = (float(box[k]) for k in ("x", "y", "width", "height"))
+    except (TypeError, KeyError, ValueError) as e:
+        raise ValueError(
+            f"`box` must be {{x, y, width, height}} in points; got {box!r}") from e
+    if w <= 0 or h <= 0:
+        raise ValueError(f"`box` width and height must be positive; got {box!r}")
+    return x, y, w, h
+
+
+@_tool()
+async def place_image(
+    deck_url: str,
+    slide_id: str,
+    svg: str | None = None,
+    image_url: str | None = None,
+    placeholder: str | None = None,
+    box: dict[str, float] | None = None,
+    fit: Fit | None = None,
+    editable: bool = False,
+    confirm_destructive: bool = False,
+    receipt: receipts.Receipt = "medium",
+) -> Any:
+    """Put an SVG diagram or a public image onto a slide, in a placeholder or a box.
+
+    Preferred workflow (placeholder first): the user prepares a reference
+    slide with a box holding marker text such as `{{DIAGRAM}}`, laid out the
+    way they want visuals to sit. Duplicate that slide (`exec_batch_update`
+    with `duplicateObject`), then call this with the new slide's id and the
+    marker: the image replaces the box and keeps its object id. With no
+    placeholder, copy a box from a reference slide (`read_slides(...,
+    detail="raw")`) and pass it as `box`.
+
+    Placeholder rules:
+      - The marker box must be a shape on the slide itself. Markers on a
+        layout or master are not reachable and are reported as not found.
+      - Give the marker box no outline: the placed image inherits it.
+      - Every shape on the slide containing the marker is replaced.
+      - Destructive (replaceAllShapesWithImage): needs confirm_destructive.
+
+    SVG: rasterised to PNG at the target box's aspect ratio (the drawing is
+    centred in it), hosted briefly for Google to fetch, then deleted. Needs
+    the hosted server (`slides-mcp serve-http` with an image bucket). Use
+    generic font families (sans-serif, serif, monospace); named fonts fall
+    back, CJK renders as empty boxes, and text with no font is reported in
+    `warnings`. Only in-document references (#id) and data: URIs are allowed.
+
+    image_url: a PNG, JPEG or GIF Google can fetch (public, under 50 MB and
+    25 megapixels). Works over stdio too. Google keeps the image's own
+    aspect ratio, so in a box the stored size can be smaller than the box.
+
+    editable=true: the SVG becomes native Slides shapes the user can edit,
+    fitted into the box (centred, aspect kept) and grouped when there are two
+    or more. No bucket needed; works over stdio. A placeholder box is deleted
+    (deleteObject, needs confirm_destructive) and the drawing takes its place.
+    Supported subset, nothing else:
+      - `svg` with viewBox (or numeric width/height); `g` with translate()
+        and scale() only; presentation attributes inherit from `g`.
+      - `rect` (rx/ry gives a rounded rectangle), `circle`, `ellipse`.
+      - `line`, with marker-start / marker-end pointing at a `defs > marker`
+        holding exactly one path, polygon, polyline or circle: it picks the
+        arrowhead style (filled or open arrow, filled or open circle).
+      - `text` with plain text only: font-family, font-size, font-weight,
+        font-style, text-anchor, dominant-baseline. The first font family is
+        used; generic names become Arial, Times New Roman or Courier New.
+      - fill, stroke, stroke-width, stroke-dasharray, fill-opacity,
+        stroke-opacity, opacity, also inside style=""; colours as hex,
+        rgb() or basic names.
+    Known losses: corner radius is Slides' fixed one; any dash array becomes
+    one dash style; arrowhead size follows the line weight.
+    Anything else (path, polyline, polygon, gradients, patterns, filters,
+    clip paths, masks, rotate/skew/matrix, tspan, image, use, zero-size
+    elements) is refused before any write, every problem listed in
+    `error.message`; nothing is drawn. Simplify the SVG or use
+    editable=false.
+
+    Args:
+      deck_url:            Slides URL or raw deck ID.
+      slide_id:            The slide to place on (from `get_deck_outline`).
+      svg:                 SVG markup. Exactly one of svg / image_url.
+      image_url:           Public image URL.
+      placeholder:         Marker text in a box on that slide. Exactly one
+                           of placeholder / box.
+      box:                 {x, y, width, height} in points (a 16:9 slide is
+                           720 x 405).
+      fit:                 Placeholder only. "contain" (default): no crop;
+                           the box shrinks to the image's aspect ratio,
+                           centred. "cover": the box is kept and the image
+                           cropped to fill it. Editable output is always
+                           "contain".
+      editable:            SVG only. True draws native, editable shapes
+                           (subset above) instead of an image.
+      confirm_destructive: Required True for a placeholder target.
+      receipt:             Thumbnail of the slide after the write: "medium"
+                           (default), "large" or "off".
+
+    Returns the `exec_batch_update` reply (post-state summary, thumbnails)
+    plus `placed{slide_id, object_ids, source, target}`; editable output adds
+    `editable: true`, and object_ids are the groups (or the lone element).
+    Errors come back with `isError: true` and `error{kind, message}`; kind is
+    hosting, svg, target, marker or google (Google's reason for rejecting it).
+    """
+    receipts.check(receipt)
+    if (svg is None) == (image_url is None):
+        raise ValueError("Pass exactly one of `svg` or `image_url`.")
+    if editable and svg is None:
+        raise ValueError("`editable=true` converts SVG into native shapes; it needs `svg`, "
+                         "not `image_url`.")
+    if (placeholder is None) == (box is None):
+        raise ValueError("Pass exactly one target with `slide_id`: `placeholder` "
+                         "(marker text) or `box` ({x, y, width, height} in points).")
+    if fit is not None and placeholder is None:
+        raise ValueError("`fit` applies to placeholder targets only; a box always keeps "
+                         "the image's aspect ratio inside the box.")
+    if fit is not None and fit not in _FIT_METHODS:
+        raise ValueError(f"fit must be contain|cover; got {fit!r}")
+    if editable and fit == "cover":
+        raise ValueError("`fit=\"cover\"` crops an image; editable shapes always fit inside "
+                         "the placeholder box (contain).")
+    box_pt = _box_pt(box) if box is not None else None
+    if placeholder is not None and not confirm_destructive:
+        return _refusal(["deleteObject" if editable else "replaceAllShapesWithImage"])
+    if msg := writes.write_scope_error():
+        return _place_error("auth", msg)
+    if editable:
+        assert svg is not None
+        return await anyio.to_thread.run_sync(lambda: _place_editable(
+            deck_url, slide_id, svg=svg, placeholder=placeholder, box_pt=box_pt,
+            receipt=receipt))
+    return await anyio.to_thread.run_sync(lambda: _place_image(
+        deck_url, slide_id, svg=svg, image_url=image_url, placeholder=placeholder,
+        box_pt=box_pt, fit=fit or "contain", receipt=receipt))
+
+
+def _place_image(
+    deck_url: str,
+    slide_id: str,
+    *,
+    svg: str | None,
+    image_url: str | None,
+    placeholder: str | None,
+    box_pt: tuple[float, float, float, float] | None,
+    fit: str,
+    receipt: str,
+) -> Any:
+    """`place_image` after its arguments are checked; runs off the event loop."""
+    store = state_store.current()
+    if svg is not None:
+        try:
+            store.check_image_hosting()
+        except state_store.ImageHostingUnavailable as e:
+            return _place_error("hosting", str(e))
+
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+    slide = next((s for s in prez.get("slides", []) or [] if s["objectId"] == slide_id), None)
+    if slide is None:
+        return _place_error("target", f"No slide {slide_id!r} in this deck; slide ids come "
+                                      f"from get_deck_outline.")
+    if placeholder is not None:
+        boxes = [s for s in normalize.flatten(_slide_shapes(normalize.DeckContext(prez), slide))
+                 if placeholder in (s.text or "")]
+        if not boxes:
+            return _place_error("marker", _marker_missing(placeholder, slide_id))
+        width_pt, height_pt = boxes[0].w_in * 72, boxes[0].h_in * 72
+    else:
+        assert box_pt is not None
+        width_pt, height_pt = box_pt[2], box_pt[3]
+
+    warnings: list[str] = []
+    hosted: state_store.HostedImage | None = None
+    try:
+        if svg is not None:
+            try:
+                raster = svg_raster.rasterise(svg, width_pt, height_pt)
+                hosted = store.put_image(raster.png, content_type="image/png")
+            except svg_raster.SvgError as e:
+                return _place_error("svg", str(e))
+            except state_store.ImageHostingUnavailable as e:
+                return _place_error("hosting", str(e))
+            warnings.extend(raster.warnings)
+            url = hosted.url
+        else:
+            assert image_url is not None
+            url = image_url
+
+        if placeholder is not None:
+            request: dict[str, Any] = {"replaceAllShapesWithImage": {
+                "containsText": {"text": placeholder, "matchCase": True},
+                "imageUrl": url,
+                "imageReplaceMethod": _FIT_METHODS[fit],
+                "pageObjectIds": [slide_id],
+            }}
+        else:
+            assert box_pt is not None
+            x, y, w, h = box_pt
+            request = {"createImage": {"url": url, "elementProperties": {
+                "pageObjectId": slide_id,
+                "size": {"width": {"magnitude": w, "unit": "PT"},
+                         "height": {"magnitude": h, "unit": "PT"}},
+                "transform": {"scaleX": 1, "scaleY": 1, "translateX": x,
+                              "translateY": y, "unit": "PT"},
+            }}}
+        try:
+            out, touched = _apply_requests(
+                deck_url, [request], dry_run=False, confirm_destructive=True,
+                post_state="summary", want_slides=receipt != "off", tool="place_image")
+        except slides_api.SlidesApiError as e:
+            return _place_error("google", _GOOGLE_PREFIX_RE.sub("", str(e)))
+    finally:
+        if hosted is not None:
+            try:
+                store.delete_image(hosted.handle)
+            except Exception as e:  # noqa: BLE001 - the bucket's expiry rule is the backstop
+                warnings.append(f"The temporary image was not deleted ({e}); the bucket's "
+                                f"expiry rule removes it.")
+
+    reply = out["replies"][0] if out.get("replies") else {}
+    if placeholder is not None:
+        if not reply.get("replaceAllShapesWithImage", {}).get("occurrencesChanged"):
+            return _place_error("marker", _marker_missing(placeholder, slide_id),
+                                warnings=warnings)
+        object_ids = [b.object_id for b in boxes]
+    else:
+        object_ids = [oid for oid in [reply.get("createImage", {}).get("objectId")] if oid]
+        if image_url is not None:
+            warnings.append("Google fits the image inside the box at the image's own aspect "
+                            "ratio, centred, so its stored size can be smaller than the box.")
+    out["placed"] = {"slide_id": slide_id, "object_ids": object_ids,
+                     "source": "svg" if svg is not None else "image_url",
+                     "target": "placeholder" if placeholder is not None else "box"}
+    out["warnings"] = [*out.get("warnings", []), *warnings]
+    return _attach_receipt(out, deck_url, touched, receipt)
+
+
+def _place_editable(
+    deck_url: str,
+    slide_id: str,
+    *,
+    svg: str,
+    placeholder: str | None,
+    box_pt: tuple[float, float, float, float] | None,
+    receipt: str,
+) -> Any:
+    """`place_image(editable=True)` after its arguments are checked.
+
+    Converts before reading the deck, so an unsupported SVG costs no API call.
+    For a placeholder, every shape on the slide holding the marker is deleted
+    and gets its own drawing in its box, all in one batch.
+    """
+    try:
+        svg_native.convert(svg, slide_id, box_pt or (0, 0, 1, 1))  # refuse early
+    except svg_raster.SvgError as e:
+        return _place_error("svg", str(e))
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+    slide = next((s for s in prez.get("slides", []) or [] if s["objectId"] == slide_id), None)
+    if slide is None:
+        return _place_error("target", f"No slide {slide_id!r} in this deck; slide ids come "
+                                      f"from get_deck_outline.")
+    requests: list[dict[str, Any]] = []
+    object_ids: list[str] = []
+    if placeholder is not None:
+        boxes = [s for s in normalize.flatten(_slide_shapes(normalize.DeckContext(prez), slide))
+                 if placeholder in (s.text or "")]
+        if not boxes:
+            return _place_error("marker", _marker_missing(placeholder, slide_id))
+        targets = [(b.left_in * 72, b.top_in * 72, b.w_in * 72, b.h_in * 72) for b in boxes]
+        requests += [{"deleteObject": {"objectId": b.object_id}} for b in boxes]
+    else:
+        assert box_pt is not None
+        targets = [box_pt]
+    for target in targets:
+        drawing = svg_native.convert(svg, slide_id, target)
+        requests += drawing.requests
+        object_ids += drawing.object_ids
+    try:
+        out, touched = _apply_requests(
+            deck_url, requests, dry_run=False, confirm_destructive=True,
+            post_state="summary", want_slides=receipt != "off", tool="place_image")
+    except slides_api.SlidesApiError as e:
+        return _place_error("google", _GOOGLE_PREFIX_RE.sub("", str(e)))
+    out["placed"] = {"slide_id": slide_id, "object_ids": object_ids, "source": "svg",
+                     "target": "placeholder" if placeholder is not None else "box",
+                     "editable": True}
+    return _attach_receipt(out, deck_url, touched, receipt)
 
 
 def main() -> None:

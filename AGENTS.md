@@ -15,7 +15,8 @@ caller signs in with their own Google account.
   docstring to the client on connect, so a docstring edit changes agent
   behaviour. Keep them true.
 - **Writes are legwork, not authorship.** Full slide authoring was cut in
-  v2.0.0; don't add creative-layout tools (see `docs/adr/`).
+  v2.0.0; don't add creative-layout tools (see `docs/adr/`). Placing content
+  the agent supplies at a position the deck defines is legwork (`docs/adr/0009`).
 - **Every write goes through `writes.apply_batch`.** Destructive request kinds
   need `confirm_destructive=True`; convenience tools build requests and delegate
   to `exec_batch_update`, and deck scripts send each phase through the same
@@ -25,12 +26,15 @@ caller signs in with their own Google account.
 ## Layout
 
 ```
-src/slides_mcp/server.py      — all 10 MCP tools, slide selectors, write guard, post-state
+src/slides_mcp/server.py      — every MCP tool, slide selectors, write guard, post-state
+src/slides_mcp/svg_raster.py  - place_image's SVG to PNG, rendered by resvg in a child process
+src/slides_mcp/svg_native.py  - place_image(editable=true): a supported SVG subset as native shapes
 src/slides_mcp/writes.py      — the one write path: apply_batch, destructive kinds, audit line
 src/slides_mcp/scripting.py   — run_deck_script runtime: limits, worker handle, phases, warnings
 src/slides_mcp/sandbox/       — V8 worker process and the JS prelude scripts see
 src/slides_mcp/deck_model.py  — the deck snapshot scripts read
 src/slides_mcp/skill_bundle.py — finds the shipped skill (wheel copy or checkout) for install_skill
+src/slides_mcp/receipts.py    - thumbnails of the slides a write touched, attached to its reply
 src/slides_mcp/notes_md.py    — Markdown to speaker-notes requests and back
 src/slides_mcp/slides_api.py  — Slides REST wrapper, field masks, deck-id parsing
 src/slides_mcp/normalize.py   — Slides API pageElement JSON → FlatShape
@@ -38,6 +42,7 @@ src/slides_mcp/classify.py    — topology-based archetype label per slide
 src/slides_mcp/projection.py  — FlatShape → outline / summary / full / raw dicts
 src/slides_mcp/auth.py        — token.json load and refresh; stdio vs HTTP mode; the HTTP caller's credentials
 src/slides_mcp/http_mode.py   — serve-http: settings check, Google sign-in proxy, Firestore auth store
+src/slides_mcp/state_store.py - short-lived state: dry-run plans and temporary images; memory or Firestore+GCS
 src/slides_mcp/bootstrap.py   — `slides-mcp-auth` OAuth consent; cli.py is the entry point
 skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate requests; the wheel
                                 bundles it as slides_mcp/_skills_data/ for install_skill
@@ -46,6 +51,7 @@ Dockerfile                    — the serve-http image Cloud Run builds; .gcloud
 releases/vX.Y.Z.md            — hand-written release notes, required per tag
 tests/unit/                   — pytest, no network
 tests/fake_api.py             — fake Slides API over a scrubbed deck recording
+tests/integration/            - Firestore state store against the emulator in Docker; not in CI
 ```
 
 ## Commands
@@ -55,6 +61,7 @@ uv sync                              # install with dev tools
 uv run pytest tests/unit/ -q         # tests (CI gate)
 uv run ruff check src/ tests/        # lint (CI gate)
 uv run slides-mcp                    # start the stdio server
+docker compose -f tests/integration/compose.yaml run --rm tests   # Firestore emulator tests (not CI)
 ```
 
 `mypy` is a dev dependency but is not clean and CI does not run it.

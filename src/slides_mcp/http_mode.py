@@ -24,6 +24,7 @@ environment variables only:
   SLIDES_MCP_GOOGLE_CLIENT_SECRET  yes       none
   SLIDES_MCP_BASE_URL              yes       none (the service's public https URL)
   SLIDES_MCP_FIRESTORE_DATABASE    yes       none (a database only slides-mcp uses)
+  SLIDES_MCP_IMAGE_BUCKET          no        none (images for Google to fetch; unset = no SVG upload)
   PORT                             no        8080
 
 The Google OAuth client's redirect URI must be <SLIDES_MCP_BASE_URL>/auth/callback.
@@ -55,6 +56,7 @@ class Settings:
     base_url: str
     firestore_database: str
     port: int
+    image_bucket: str | None = None
 
 
 def check_settings(env: dict[str, str]) -> tuple[Settings | None, list[tuple[str, str]]]:
@@ -97,6 +99,7 @@ def check_settings(env: dict[str, str]) -> tuple[Settings | None, list[tuple[str
         base_url=base_url,
         firestore_database=db,
         port=port,
+        image_bucket=(env.get("SLIDES_MCP_IMAGE_BUCKET") or "").strip() or None,
     ), []
 
 
@@ -158,6 +161,14 @@ def build_auth_store(settings: Settings):
     return PrefixCollectionsWrapper(store, prefix=COLLECTION_PREFIX)
 
 
+def build_state_store(settings: Settings):
+    """Plans in the auth database, images in SLIDES_MCP_IMAGE_BUCKET (if set)."""
+    from .state_store import HostedStateStore
+
+    return HostedStateStore(database=settings.firestore_database,
+                            image_bucket=settings.image_bucket)
+
+
 def build_provider(settings: Settings, client_storage):
     from fastmcp.server.auth.providers.google import GoogleProvider
 
@@ -182,11 +193,12 @@ def serve(env: dict[str, str] | None = None) -> int:
         print(format_problems(problems), file=sys.stderr)
         return 2
 
-    from . import auth
+    from . import auth, state_store
     from .server import mcp
 
     auth.enable_http_mode()
     mcp.auth = build_provider(settings, build_auth_store(settings))
+    state_store.install(build_state_store(settings))
     mcp.run(
         transport="http",
         host="0.0.0.0",

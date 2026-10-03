@@ -16,6 +16,7 @@ A reference for using `exec_batch_update` to make legwork-shaped edits to Google
 | Speaker notes, with formatting | `write_speaker_notes` (Markdown in, real bold/italic/headers/bullets out) |
 | A handful of requests whose ids you already know | `exec_batch_update` |
 | A footer on every slide | `add_section_footers` |
+| A diagram (SVG you write) or a picture (public URL) on a slide | `place_image` (`editable=True` for native shapes the user can edit) |
 
 **Prefer `run_deck_script` whenever you would otherwise read the deck, compute
 requests in your head and paste them back.** The script reads the deck inside
@@ -44,8 +45,11 @@ return {queued: n};
 - Pass data through `input`, never by splicing it into the script string.
 - `await commit()` only when a later step needs to see what an earlier one
   created; each phase is one atomic batch.
-- `render_slides="1-3"` on a real apply returns thumbnails so you can check
-  the result by eye.
+- A real apply returns thumbnails of up to 3 slides it touched, so you can
+  check the result by eye; `render_slides="1-3"` picks the slides instead.
+  Every write tool does this except `write_speaker_notes`. Pass
+  `receipt="off"` on bulk edits you trust, `receipt="large"` to read small
+  text.
 - Read the `warnings`: a font change that drops a weight, or text that will
   likely overflow a fixed-size box.
 
@@ -207,10 +211,94 @@ run_deck_script(
       return {titles: n};
     """,
     input={"font": "Inter"},
-)  # dry run: read the preview and warnings, then call again with dry_run=False
+)  # dry run: read the preview and warnings, then apply it without resending:
+
+run_deck_script(deck_url, plan_id=preview["plan_id"], dry_run=False)
 ```
 
+Applying a plan re-runs the stored script against the deck as it is now, so a
+colleague's edits since the dry run are picked up. Plans last 1 hour and apply
+once.
+
 `styleRuns` keeps each run's weight across the font change.
+
+### Example 4: Put a diagram into the user's placeholder
+
+The user has a reference slide with a box holding the text `{{DIAGRAM}}`
+(no outline: the image inherits it). Copy the slide, then place SVG into the
+copy's box:
+
+```python
+exec_batch_update(deck_url, [
+    {"duplicateObject": {"objectId": "ref_slide", "objectIds": {"ref_slide": "flow_slide"}}},
+])  # the copy's marker box is now on flow_slide
+
+place_image(
+    deck_url,
+    slide_id="flow_slide",
+    placeholder="{{DIAGRAM}}",
+    svg="""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200">
+      <rect x="20" y="60" width="160" height="80" rx="12" fill="#e3ecfa" stroke="#3366cc"/>
+      <rect x="420" y="60" width="160" height="80" rx="12" fill="#e6f4ea" stroke="#188038"/>
+      <line x1="180" y1="100" x2="420" y2="100" stroke="#444" stroke-width="3"/>
+      <text x="100" y="107" font-family="sans-serif" font-size="22" text-anchor="middle">Draft</text>
+      <text x="500" y="107" font-family="sans-serif" font-size="22" text-anchor="middle">Review</text>
+    </svg>""",
+    confirm_destructive=True,  # replacing the marker box is a destructive kind
+)
+```
+
+- The image keeps the box's object id; the reply's thumbnail shows it in place.
+- Use `sans-serif`, `serif` or `monospace`. Text the server has no font for
+  is listed in `warnings`.
+- `error.kind == "marker"` means the marker is not in a shape on that slide.
+  A marker on the slide's layout or master cannot be reached.
+- No placeholder? Pass `box={"x": 60, "y": 80, "width": 400, "height": 200}`
+  (points) copied from a reference slide's `read_slides(detail="raw")`.
+- SVG needs the hosted server. `image_url=` with a public PNG, JPEG or GIF
+  works anywhere.
+
+### Example 5: A diagram the user can edit
+
+When the user wants to change the diagram in Slides afterwards, pass
+`editable=True`: the SVG becomes native rectangles, ellipses, lines and text
+boxes, grouped, in the placeholder's box or `box`. It works over stdio too
+(nothing is hosted).
+
+```python
+place_image(
+    deck_url,
+    slide_id="flow_slide",
+    placeholder="{{DIAGRAM}}",
+    editable=True,
+    confirm_destructive=True,  # the marker box is deleted (deleteObject)
+    svg="""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200">
+      <defs><marker id="tip"><path d="M0,0 L10,5 L0,10 Z" fill="#444"/></marker></defs>
+      <rect x="20" y="60" width="160" height="80" rx="12" fill="#e3ecfa" stroke="#3366cc"/>
+      <ellipse cx="500" cy="100" rx="80" ry="40" fill="#e6f4ea" stroke="#188038"/>
+      <line x1="180" y1="100" x2="420" y2="100" stroke="#444" stroke-width="3"
+            marker-end="url(#tip)"/>
+      <text x="100" y="100" font-family="Arial" font-size="22" text-anchor="middle"
+            dominant-baseline="middle">Draft</text>
+      <text x="500" y="100" font-family="Arial" font-size="22" text-anchor="middle"
+            dominant-baseline="middle">Review</text>
+    </svg>""",
+)
+```
+
+- Write only the subset: `rect`, `circle`, `ellipse`, `line` (arrowheads via
+  a one-child `marker`), plain `text`, `g` with `translate` / `scale`, solid
+  colours. No `path`, `polygon`, `polyline`, gradients, filters, `rotate`,
+  `tspan`, `image` or `use`.
+- Anything else is refused before any write, and `error.message` lists every
+  offending element; fix them all and call again. Nothing is half-drawn.
+- Expect three losses: Slides' fixed corner radius (a pill comes out as a
+  rounded rectangle), one dash style for every dash pattern, and arrowheads
+  sized by the line weight.
+- Named fonts work here (unlike the image path); generic names become Arial,
+  Times New Roman or Courier New.
+- `placed.object_ids` is the group's id; move or resize the whole drawing
+  through it.
 
 ## Tips
 

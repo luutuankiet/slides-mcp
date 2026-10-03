@@ -21,7 +21,12 @@ Failure modes that produce no error message, indexed by the symptom you
 would observe. Read before debugging behaviour that is wrong but not
 crashing.
 
-_No pages yet._
+| symptom | page | area | verified |
+|---|---|---|---|
+|  | [custom-shape-type-creates-invisible-shape](../../../docs/traps/custom-shape-type-creates-invisible-shape.md) |  | 2026-10-03 |
+|  | [generic-font-family-renders-as-serif](../../../docs/traps/generic-font-family-renders-as-serif.md) |  | 2026-10-03 |
+|  | [image-replace-matching-nothing-returns-success](../../../docs/traps/image-replace-matching-nothing-returns-success.md) |  | 2026-10-03 |
+|  | [svg-text-vanishes-in-slim-image](../../../docs/traps/svg-text-vanishes-in-slim-image.md) |  | 2026-10-03 |
 
 ## Reference
 
@@ -45,6 +50,7 @@ it with a new one rather than editing it.
 - [Keep self-hosting slides-mcp rather than adopt Google's Slides MCP server](../../../docs/adr/0006-keep-self-hosting-over-google-slides-mcp.md)
 - [The caller's Google credentials come from request context, not a parameter](../../../docs/adr/0007-caller-credentials-from-request-context.md)
 - [Point agents at the skill from the raw-requests tool, not from every tool](../../../docs/adr/0008-tools-tell-agents-to-load-the-skill.md)
+- [Image placement is render-and-place legwork, not authorship](../../../docs/adr/0009-image-placement-is-render-and-place-legwork.md)
 
 <!-- END GENERATED INDEX -->
 

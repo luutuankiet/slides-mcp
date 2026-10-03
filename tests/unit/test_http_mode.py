@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import anyio
 import httpx2 as httpx
@@ -29,9 +30,9 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list:
     seen: list = []
     monkeypatch.setattr(slides_api, "build",
                         lambda *a, credentials, **k: seen.append(credentials) or object())
-    slides_api._stdio_service.cache_clear()
+    slides_api._stdio_reset()
     yield seen
-    slides_api._stdio_service.cache_clear()
+    slides_api._stdio_reset()
 
 
 @pytest.fixture
@@ -53,6 +54,16 @@ def test_stdio_resolves_from_token_json_and_caches(built, monkeypatch):
     first, second = slides_api._slides_service(), slides_api._slides_service()
     assert first is second
     assert calls == [1] and built == ["file-creds"]
+
+
+def test_stdio_gives_each_thread_its_own_client(built, monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth, "load_credentials", lambda: calls.append(1) or "file-creds")
+    here = slides_api._slides_service()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        there = pool.submit(slides_api._slides_service).result()
+    assert here is not there
+    assert calls == [1] and built == ["file-creds", "file-creds"]
 
 
 def test_http_builds_from_caller_token_and_caches_nothing(built, http):
@@ -135,6 +146,29 @@ def test_localhost_http_allowed_for_local_testing():
     _, problems = http_mode.check_settings({**GOOD_ENV,
                                             "SLIDES_MCP_BASE_URL": "http://localhost:8080"})
     assert problems == []
+
+
+def test_image_bucket_is_optional():
+    settings, problems = http_mode.check_settings(GOOD_ENV)
+    assert problems == [] and settings.image_bucket is None
+    settings, problems = http_mode.check_settings(
+        {**GOOD_ENV, "SLIDES_MCP_IMAGE_BUCKET": " my-images "})
+    assert problems == [] and settings.image_bucket == "my-images"
+
+
+def test_state_store_uses_the_auth_database_and_the_image_bucket():
+    from slides_mcp import state_store
+
+    settings, _ = http_mode.check_settings({**GOOD_ENV, "SLIDES_MCP_IMAGE_BUCKET": "my-images"})
+    store = http_mode.build_state_store(settings)
+    assert isinstance(store, state_store.HostedStateStore)
+    assert (store.database, store.image_bucket) == ("slides-mcp-auth", "my-images")
+
+
+def test_stdio_state_store_is_in_memory():
+    from slides_mcp import state_store
+
+    assert isinstance(state_store.current(), state_store.MemoryStateStore)
 
 
 def test_serve_exits_2_before_opening_a_port(capsys):

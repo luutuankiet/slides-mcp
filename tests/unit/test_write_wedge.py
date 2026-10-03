@@ -192,6 +192,7 @@ def test_exec_destructive_allowed_with_confirm(monkeypatch):
         [{"deleteObject": {"objectId": "slide_3col"}}],
         confirm_destructive=True,
         post_state="none",
+        receipt="off",
     )
     assert out["isError"] is False
     assert out["applied_request_count"] == 1
@@ -214,8 +215,9 @@ def test_exec_post_state_none_skips_reread(monkeypatch):
         "deck_id_xyz",
         [{"createSlide": {}}],
         post_state="none",
+        receipt="off",
     )
-    assert reads == []  # no re-read when post_state="none"
+    assert reads == []  # no re-read when post_state="none" and no receipt
     assert "post_state" not in out
     assert out["replies"] == [{"createSlide": {"objectId": "new"}}]
 
@@ -234,7 +236,7 @@ def test_exec_post_state_outline_deck_only(monkeypatch):
             "elementProperties": {"pageObjectId": "slide_3col"},
         }
     }]
-    out = exec_batch_update("deck_id_xyz", requests, post_state="outline")
+    out = exec_batch_update("deck_id_xyz", requests, post_state="outline", receipt="off")
     assert "post_state" in out
     assert "deck_outline" in out["post_state"]
     assert out["post_state"]["deck_outline"]["slide_count"] == 3
@@ -255,7 +257,7 @@ def test_exec_post_state_summary_includes_touched_slides(monkeypatch):
             "elementProperties": {"pageObjectId": "slide_3col"},
         }
     }]
-    out = exec_batch_update("deck_id_xyz", requests, post_state="summary")
+    out = exec_batch_update("deck_id_xyz", requests, post_state="summary", receipt="off")
     assert out["affected_slide_ids"] == ["slide_3col"]
     assert "slides" in out["post_state"]
     assert len(out["post_state"]["slides"]) == 1
@@ -275,6 +277,7 @@ def test_exec_403_wraps_with_actionable_message(monkeypatch):
             "deck_id_xyz",
             [{"createSlide": {}}],
             post_state="none",
+        receipt="off",
         )
 
 
@@ -312,6 +315,7 @@ def test_section_footers_builds_4_requests_per_slide(monkeypatch):
         "deck_id_xyz",
         sections=[{"name": "Intro", "slide_ids": ["slide_3col"]}],
         post_state="none",
+        receipt="off",
     )
     assert out["_proof_tool"] == "add_section_footers"
     assert out["sections_applied"] == 1
@@ -365,6 +369,7 @@ def test_section_footers_skips_existing_when_overwrite_false(monkeypatch):
         sections=[{"name": "Intro", "slide_ids": ["slide_3col"]}],
         overwrite_existing=False,
         post_state="none",
+        receipt="off",
     )
     assert out["skipped_slide_ids"] == ["slide_3col"]
     assert out["footers_added"] == 0
@@ -394,6 +399,7 @@ def test_section_footers_template_substitution(monkeypatch):
         ],
         template="{section_name} {position}/{total} prev:{prev_name} next:{next_name}",
         post_state="none",
+        receipt="off",
     )
     assert out["footers_added"] == 3
     # Section 0 (Discovery): pos 1/1, prev empty, next Build
