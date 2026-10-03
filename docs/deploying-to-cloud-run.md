@@ -11,8 +11,9 @@ to a deployed service answering sign-in requests. Two parts are still open:
 the Google OAuth console steps were written from Google's docs and not yet
 clicked through, and instance sizing waits for measurements. Steps 9 and 10
 of the one-time setup were added later: the TTL command was checked against
-`gcloud`'s help, and image upload and delete were run against a real bucket,
-but signing through the service account has not yet been run end to end.
+`gcloud`'s help, and with step 10's grants in place an image was uploaded,
+fetched anonymously through a URL signed as the service account, and deleted,
+on 2026-10-03.
 
 Placeholders used below:
 
