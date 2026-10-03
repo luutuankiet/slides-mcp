@@ -36,6 +36,7 @@ from . import (
     skill_bundle,
     slides_api,
     state_store,
+    svg_native,
     svg_raster,
     writes,
 )
@@ -1232,6 +1233,31 @@ async def place_image(
     25 megapixels). Works over stdio too. Google keeps the image's own
     aspect ratio, so in a box the stored size can be smaller than the box.
 
+    editable=true: the SVG becomes native Slides shapes the user can edit,
+    fitted into the box (centred, aspect kept) and grouped when there are two
+    or more. No bucket needed; works over stdio. A placeholder box is deleted
+    (deleteObject, needs confirm_destructive) and the drawing takes its place.
+    Supported subset, nothing else:
+      - `svg` with viewBox (or numeric width/height); `g` with translate()
+        and scale() only; presentation attributes inherit from `g`.
+      - `rect` (rx/ry gives a rounded rectangle), `circle`, `ellipse`.
+      - `line`, with marker-start / marker-end pointing at a `defs > marker`
+        holding exactly one path, polygon, polyline or circle: it picks the
+        arrowhead style (filled or open arrow, filled or open circle).
+      - `text` with plain text only: font-family, font-size, font-weight,
+        font-style, text-anchor, dominant-baseline. The first font family is
+        used; generic names become Arial, Times New Roman or Courier New.
+      - fill, stroke, stroke-width, stroke-dasharray, fill-opacity,
+        stroke-opacity, opacity, also inside style=""; colours as hex,
+        rgb() or basic names.
+    Known losses: corner radius is Slides' fixed one; any dash array becomes
+    one dash style; arrowhead size follows the line weight.
+    Anything else (path, polyline, polygon, gradients, patterns, filters,
+    clip paths, masks, rotate/skew/matrix, tspan, image, use, zero-size
+    elements) is refused before any write, every problem listed in
+    `error.message`; nothing is drawn. Simplify the SVG or use
+    editable=false.
+
     Args:
       deck_url:            Slides URL or raw deck ID.
       slide_id:            The slide to place on (from `get_deck_outline`).
@@ -1244,23 +1270,26 @@ async def place_image(
       fit:                 Placeholder only. "contain" (default): no crop;
                            the box shrinks to the image's aspect ratio,
                            centred. "cover": the box is kept and the image
-                           cropped to fill it.
-      editable:            Reserved for native editable shapes; must be false.
+                           cropped to fill it. Editable output is always
+                           "contain".
+      editable:            SVG only. True draws native, editable shapes
+                           (subset above) instead of an image.
       confirm_destructive: Required True for a placeholder target.
       receipt:             Thumbnail of the slide after the write: "medium"
                            (default), "large" or "off".
 
     Returns the `exec_batch_update` reply (post-state summary, thumbnails)
-    plus `placed{slide_id, object_ids, source, target}`. Errors come back
-    with `isError: true` and `error{kind, message}`; kind is hosting, svg,
-    target, marker or google (Google's reason for rejecting the image).
+    plus `placed{slide_id, object_ids, source, target}`; editable output adds
+    `editable: true`, and object_ids are the groups (or the lone element).
+    Errors come back with `isError: true` and `error{kind, message}`; kind is
+    hosting, svg, target, marker or google (Google's reason for rejecting it).
     """
     receipts.check(receipt)
     if (svg is None) == (image_url is None):
         raise ValueError("Pass exactly one of `svg` or `image_url`.")
-    if editable:
-        raise ValueError("`editable=true` (native, editable shapes) is not available yet; "
-                         "place the SVG as an image with editable=false.")
+    if editable and svg is None:
+        raise ValueError("`editable=true` converts SVG into native shapes; it needs `svg`, "
+                         "not `image_url`.")
     if (placeholder is None) == (box is None):
         raise ValueError("Pass exactly one target with `slide_id`: `placeholder` "
                          "(marker text) or `box` ({x, y, width, height} in points).")
@@ -1269,11 +1298,19 @@ async def place_image(
                          "the image's aspect ratio inside the box.")
     if fit is not None and fit not in _FIT_METHODS:
         raise ValueError(f"fit must be contain|cover; got {fit!r}")
+    if editable and fit == "cover":
+        raise ValueError("`fit=\"cover\"` crops an image; editable shapes always fit inside "
+                         "the placeholder box (contain).")
     box_pt = _box_pt(box) if box is not None else None
     if placeholder is not None and not confirm_destructive:
-        return _refusal(["replaceAllShapesWithImage"])
+        return _refusal(["deleteObject" if editable else "replaceAllShapesWithImage"])
     if msg := writes.write_scope_error():
         return _place_error("auth", msg)
+    if editable:
+        assert svg is not None
+        return await anyio.to_thread.run_sync(lambda: _place_editable(
+            deck_url, slide_id, svg=svg, placeholder=placeholder, box_pt=box_pt,
+            receipt=receipt))
     return await anyio.to_thread.run_sync(lambda: _place_image(
         deck_url, slide_id, svg=svg, image_url=image_url, placeholder=placeholder,
         box_pt=box_pt, fit=fit or "contain", receipt=receipt))
@@ -1377,6 +1414,59 @@ def _place_image(
                      "source": "svg" if svg is not None else "image_url",
                      "target": "placeholder" if placeholder is not None else "box"}
     out["warnings"] = [*out.get("warnings", []), *warnings]
+    return _attach_receipt(out, deck_url, touched, receipt)
+
+
+def _place_editable(
+    deck_url: str,
+    slide_id: str,
+    *,
+    svg: str,
+    placeholder: str | None,
+    box_pt: tuple[float, float, float, float] | None,
+    receipt: str,
+) -> Any:
+    """`place_image(editable=True)` after its arguments are checked.
+
+    Converts before reading the deck, so an unsupported SVG costs no API call.
+    For a placeholder, every shape on the slide holding the marker is deleted
+    and gets its own drawing in its box, all in one batch.
+    """
+    try:
+        svg_native.convert(svg, slide_id, box_pt or (0, 0, 1, 1))  # refuse early
+    except svg_raster.SvgError as e:
+        return _place_error("svg", str(e))
+    deck_id = slides_api.deck_id_from_url(deck_url)
+    prez = slides_api.get_presentation(deck_id)
+    slide = next((s for s in prez.get("slides", []) or [] if s["objectId"] == slide_id), None)
+    if slide is None:
+        return _place_error("target", f"No slide {slide_id!r} in this deck; slide ids come "
+                                      f"from get_deck_outline.")
+    requests: list[dict[str, Any]] = []
+    object_ids: list[str] = []
+    if placeholder is not None:
+        boxes = [s for s in normalize.flatten(_slide_shapes(normalize.DeckContext(prez), slide))
+                 if placeholder in (s.text or "")]
+        if not boxes:
+            return _place_error("marker", _marker_missing(placeholder, slide_id))
+        targets = [(b.left_in * 72, b.top_in * 72, b.w_in * 72, b.h_in * 72) for b in boxes]
+        requests += [{"deleteObject": {"objectId": b.object_id}} for b in boxes]
+    else:
+        assert box_pt is not None
+        targets = [box_pt]
+    for target in targets:
+        drawing = svg_native.convert(svg, slide_id, target)
+        requests += drawing.requests
+        object_ids += drawing.object_ids
+    try:
+        out, touched = _apply_requests(
+            deck_url, requests, dry_run=False, confirm_destructive=True,
+            post_state="summary", want_slides=receipt != "off", tool="place_image")
+    except slides_api.SlidesApiError as e:
+        return _place_error("google", _GOOGLE_PREFIX_RE.sub("", str(e)))
+    out["placed"] = {"slide_id": slide_id, "object_ids": object_ids, "source": "svg",
+                     "target": "placeholder" if placeholder is not None else "box",
+                     "editable": True}
     return _attach_receipt(out, deck_url, touched, receipt)
 
 
