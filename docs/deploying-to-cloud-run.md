@@ -9,7 +9,10 @@ verified: 2026-10-01
 Every command on this page was run in a brand-new project on 2026-10-01, up
 to a deployed service answering sign-in requests. Two parts are still open:
 the Google OAuth console steps were written from Google's docs and not yet
-clicked through, and instance sizing waits for measurements.
+clicked through, and instance sizing waits for measurements. Steps 9 and 10
+of the one-time setup were added later: the TTL command was checked against
+`gcloud`'s help, and image upload and delete were run against a real bucket,
+but signing through the service account has not yet been run end to end.
 
 Placeholders used below:
 
@@ -24,6 +27,7 @@ Placeholders used below:
 | `<CLIENT_SECRET>` | that client's secret; it goes into Secret Manager and nowhere else |
 | `<DEPLOYER_EMAIL>` | the Google account of the person who runs `gcloud run deploy` |
 | `<N>` | the Secret Manager version number of the client secret |
+| `<IMAGE_BUCKET>` | an optional GCS bucket for temporary images, used only by slides-mcp |
 
 ## Why a separate Firestore database
 
@@ -45,6 +49,10 @@ It gets **its own named database**, never the project's `(default)` one:
 Inside it, every collection name starts with `slides-mcp__`, for example
 `slides-mcp__mcp-upstream-tokens`. There are seven of them, created on first
 write; you never create collections by hand.
+
+An eighth, `slides-mcp__plans`, holds deck-script dry runs for an hour so a
+plan made on one instance can be applied on another. Each plan is tied to
+one deck and one signed-in caller.
 
 ## One-time setup
 
@@ -148,6 +156,58 @@ write; you never create collections by hand.
      --role='roles/iam.serviceAccountUser'
    ```
 
+9. **Let dry-run plans expire on their own.** A deck-script dry run is
+   stored for an hour in the auth database, collection `slides-mcp__plans`,
+   so another instance can apply it. slides-mcp ignores a plan once its
+   `expires_at` time has passed; this TTL policy makes Firestore delete it too.
+   ```
+   gcloud firestore fields ttls update expires_at \
+     --project=<GCP_PROJECT> \
+     --database=slides-mcp-auth \
+     --collection-group=slides-mcp__plans \
+     --enable-ttl
+   ```
+   Firestore deletes expired documents within about a day, not at once; that
+   is fine, because reads already treat them as gone.
+
+10. **Optional: an image bucket**, for tools that hand Google an image the
+    server made (Google fetches inserted images from a URL). Without it the
+    server still starts and plans still work; only those image calls fail,
+    with an error naming `SLIDES_MCP_IMAGE_BUCKET`. Each image is uploaded
+    under a random name, given to Google as a signed URL valid for 5 minutes,
+    and deleted straight after the write. A lifecycle rule deleting objects
+    older than 1 day (the smallest age GCS allows) catches anything missed.
+    ```
+    gcloud storage buckets create gs://<IMAGE_BUCKET> \
+      --project=<GCP_PROJECT> \
+      --location=<REGION> \
+      --uniform-bucket-level-access \
+      --public-access-prevention
+
+    printf '%s' '{"rule":[{"action":{"type":"Delete"},"condition":{"age":1}}]}' \
+      > lifecycle.json
+    gcloud storage buckets update gs://<IMAGE_BUCKET> --lifecycle-file=lifecycle.json
+    ```
+    Then grant the service account object access on that bucket only, and
+    permission to sign URLs as itself. Cloud Run's credentials hold no private
+    key, so signing goes through the IAM Credentials API's `signBlob` call,
+    which needs that API on and the Token Creator role on the account itself.
+    ```
+    gcloud services enable iamcredentials.googleapis.com --project=<GCP_PROJECT>
+
+    gcloud storage buckets add-iam-policy-binding gs://<IMAGE_BUCKET> \
+      --member='serviceAccount:<SERVICE_ACCOUNT>' \
+      --role='roles/storage.objectAdmin'
+
+    gcloud iam service-accounts add-iam-policy-binding <SERVICE_ACCOUNT> \
+      --project=<GCP_PROJECT> \
+      --member='serviceAccount:<SERVICE_ACCOUNT>' \
+      --role='roles/iam.serviceAccountTokenCreator'
+    ```
+    Set `SLIDES_MCP_IMAGE_BUCKET=<IMAGE_BUCKET>` on the service, without the
+    `gs://`. The bucket stays private: a signed URL is the only way to read an
+    object, and it is unguessable and short-lived.
+
 ## The Google OAuth consent screen and Web client
 
 These exist only in the Google Cloud console, under **Google Auth Platform**,
@@ -179,6 +239,7 @@ invalid it prints one line per problem and exits with code `2`.
 | `SLIDES_MCP_GOOGLE_CLIENT_SECRET` | yes | none | Secret Manager via `--set-secrets` |
 | `SLIDES_MCP_BASE_URL` | yes | none | `--set-env-vars`, the service's `https://` URL |
 | `SLIDES_MCP_FIRESTORE_DATABASE` | yes | none | `--set-env-vars` |
+| `SLIDES_MCP_IMAGE_BUCKET` | no | none | `--set-env-vars`, the bucket name from step 10 |
 | `PORT` | no | `8080` | set by Cloud Run |
 
 To run HTTP mode locally, point it at the Firestore emulator with
@@ -289,6 +350,8 @@ writes: cents a month.
 Expired records are never deleted: the storage library saves expiry as text,
 which Firestore's automatic deletion cannot use. They are ignored when read,
 and at this size they add up to a few thousand small documents a year.
+Dry-run plans are the exception: their expiry is a real timestamp, so the
+TTL policy from step 9 deletes them.
 
 ## Still to write
 

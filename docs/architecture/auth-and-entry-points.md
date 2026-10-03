@@ -71,8 +71,8 @@ token itself.
 
 ## HTTP mode
 
-`slides-mcp serve-http` (`http_mode.py:serve`, 169–) checks its four
-`SLIDES_MCP_` settings, calls `auth.enable_http_mode()` once, attaches
+`slides-mcp serve-http` (`http_mode.py:serve`, 169–) checks its four required
+`SLIDES_MCP_` settings and one optional one, calls `auth.enable_http_mode()` once, attaches
 fastmcp's `GoogleProvider` and runs stateless streamable HTTP. The mode is
 never guessed per request.
 
@@ -93,6 +93,7 @@ Other HTTP-mode differences:
 | `403` on a write | "re-run `slides-mcp-auth`" | "check edit access, then sign in again" |
 | `401` from Google | plain error | tells the agent to have the user re-authenticate this server |
 | `auth_status` | token.json state | `mode: "http"`, caller email, scopes, expiry |
+| `state_store.current()` (dry-run plans, temporary images) | `MemoryStateStore`: plans in process memory, image calls refused | `HostedStateStore`, installed by `serve`: plans in the auth database's `slides-mcp__plans`, images in the optional `SLIDES_MCP_IMAGE_BUCKET` |
 
 The sign-in proxy calls Google's `tokeninfo` and `userinfo` on every request.
 `http_mode.ValidationCache` keeps a successful result until that access token
