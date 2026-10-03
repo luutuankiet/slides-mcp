@@ -148,6 +148,29 @@ def test_localhost_http_allowed_for_local_testing():
     assert problems == []
 
 
+def test_image_bucket_is_optional():
+    settings, problems = http_mode.check_settings(GOOD_ENV)
+    assert problems == [] and settings.image_bucket is None
+    settings, problems = http_mode.check_settings(
+        {**GOOD_ENV, "SLIDES_MCP_IMAGE_BUCKET": " my-images "})
+    assert problems == [] and settings.image_bucket == "my-images"
+
+
+def test_state_store_uses_the_auth_database_and_the_image_bucket():
+    from slides_mcp import state_store
+
+    settings, _ = http_mode.check_settings({**GOOD_ENV, "SLIDES_MCP_IMAGE_BUCKET": "my-images"})
+    store = http_mode.build_state_store(settings)
+    assert isinstance(store, state_store.HostedStateStore)
+    assert (store.database, store.image_bucket) == ("slides-mcp-auth", "my-images")
+
+
+def test_stdio_state_store_is_in_memory():
+    from slides_mcp import state_store
+
+    assert isinstance(state_store.current(), state_store.MemoryStateStore)
+
+
 def test_serve_exits_2_before_opening_a_port(capsys):
     assert http_mode.serve(env={}) == 2
     err = capsys.readouterr().err

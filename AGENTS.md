@@ -40,6 +40,7 @@ src/slides_mcp/classify.py    — topology-based archetype label per slide
 src/slides_mcp/projection.py  — FlatShape → outline / summary / full / raw dicts
 src/slides_mcp/auth.py        — token.json load and refresh; stdio vs HTTP mode; the HTTP caller's credentials
 src/slides_mcp/http_mode.py   — serve-http: settings check, Google sign-in proxy, Firestore auth store
+src/slides_mcp/state_store.py - short-lived state: dry-run plans and temporary images; memory or Firestore+GCS
 src/slides_mcp/bootstrap.py   — `slides-mcp-auth` OAuth consent; cli.py is the entry point
 skills/slides-mcp/SKILL.md    — shipped agent skill: composing batchUpdate requests; the wheel
                                 bundles it as slides_mcp/_skills_data/ for install_skill
@@ -48,6 +49,7 @@ Dockerfile                    — the serve-http image Cloud Run builds; .gcloud
 releases/vX.Y.Z.md            — hand-written release notes, required per tag
 tests/unit/                   — pytest, no network
 tests/fake_api.py             — fake Slides API over a scrubbed deck recording
+tests/integration/            - Firestore state store against the emulator in Docker; not in CI
 ```
 
 ## Commands
@@ -57,6 +59,7 @@ uv sync                              # install with dev tools
 uv run pytest tests/unit/ -q         # tests (CI gate)
 uv run ruff check src/ tests/        # lint (CI gate)
 uv run slides-mcp                    # start the stdio server
+docker compose -f tests/integration/compose.yaml run --rm tests   # Firestore emulator tests (not CI)
 ```
 
 `mypy` is a dev dependency but is not clean and CI does not run it.
