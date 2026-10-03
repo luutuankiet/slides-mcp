@@ -16,7 +16,7 @@ A reference for using `exec_batch_update` to make legwork-shaped edits to Google
 | Speaker notes, with formatting | `write_speaker_notes` (Markdown in, real bold/italic/headers/bullets out) |
 | A handful of requests whose ids you already know | `exec_batch_update` |
 | A footer on every slide | `add_section_footers` |
-| A diagram (SVG you write) or a picture (public URL) on a slide | `place_image` |
+| A diagram (SVG you write) or a picture (public URL) on a slide | `place_image` (`editable=True` for native shapes the user can edit) |
 
 **Prefer `run_deck_script` whenever you would otherwise read the deck, compute
 requests in your head and paste them back.** The script reads the deck inside
@@ -257,6 +257,48 @@ place_image(
   (points) copied from a reference slide's `read_slides(detail="raw")`.
 - SVG needs the hosted server. `image_url=` with a public PNG, JPEG or GIF
   works anywhere.
+
+### Example 5: A diagram the user can edit
+
+When the user wants to change the diagram in Slides afterwards, pass
+`editable=True`: the SVG becomes native rectangles, ellipses, lines and text
+boxes, grouped, in the placeholder's box or `box`. It works over stdio too
+(nothing is hosted).
+
+```python
+place_image(
+    deck_url,
+    slide_id="flow_slide",
+    placeholder="{{DIAGRAM}}",
+    editable=True,
+    confirm_destructive=True,  # the marker box is deleted (deleteObject)
+    svg="""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200">
+      <defs><marker id="tip"><path d="M0,0 L10,5 L0,10 Z" fill="#444"/></marker></defs>
+      <rect x="20" y="60" width="160" height="80" rx="12" fill="#e3ecfa" stroke="#3366cc"/>
+      <ellipse cx="500" cy="100" rx="80" ry="40" fill="#e6f4ea" stroke="#188038"/>
+      <line x1="180" y1="100" x2="420" y2="100" stroke="#444" stroke-width="3"
+            marker-end="url(#tip)"/>
+      <text x="100" y="100" font-family="Arial" font-size="22" text-anchor="middle"
+            dominant-baseline="middle">Draft</text>
+      <text x="500" y="100" font-family="Arial" font-size="22" text-anchor="middle"
+            dominant-baseline="middle">Review</text>
+    </svg>""",
+)
+```
+
+- Write only the subset: `rect`, `circle`, `ellipse`, `line` (arrowheads via
+  a one-child `marker`), plain `text`, `g` with `translate` / `scale`, solid
+  colours. No `path`, `polygon`, `polyline`, gradients, filters, `rotate`,
+  `tspan`, `image` or `use`.
+- Anything else is refused before any write, and `error.message` lists every
+  offending element; fix them all and call again. Nothing is half-drawn.
+- Expect three losses: Slides' fixed corner radius (a pill comes out as a
+  rounded rectangle), one dash style for every dash pattern, and arrowheads
+  sized by the line weight.
+- Named fonts work here (unlike the image path); generic names become Arial,
+  Times New Roman or Courier New.
+- `placed.object_ids` is the group's id; move or resize the whole drawing
+  through it.
 
 ## Tips
 

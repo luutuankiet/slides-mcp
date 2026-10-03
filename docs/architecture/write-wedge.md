@@ -1,6 +1,6 @@
 ---
 title: Write wedge (exec_batch_update, add_section_footers, write_speaker_notes, place_image)
-covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises, hosts and places an image
+covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises, hosts and places an image, how editable SVG becomes native shapes
 verified: 2026-10-03
 ---
 
@@ -14,7 +14,7 @@ flowchart LR
   ebu[exec_batch_update] --> ar[_apply_requests]
   footers[add_section_footers] -->|builds requests| ar
   notes[write_speaker_notes] -->|builds requests| ar
-  place[place_image] -->|one image request| ar
+  place[place_image] -->|image request, or native shapes| ar
   ar --> apply[writes.apply_batch]
   script[run_deck_script] -->|one batch per commit| apply
   apply --> api[slides_api.batch_update]
@@ -157,17 +157,18 @@ nested by two spaces.
   round trip `write → read_slides(notes_format="markdown")` is tested without
   the network.
 
-## `place_image` (server.py 1166–1380, `svg_raster.py`)
+## `place_image` (server.py 1167–1470, `svg_raster.py`, `svg_native.py`)
 
 Puts an SVG or a public image URL on one slide, into a marker placeholder or
-an explicit box, as **one** request through `_apply_requests` (audit tool
+an explicit box, as **one** batch through `_apply_requests` (audit tool
 name `place_image`), so the audit line, post-state and receipt are the same
-as any other write. In order:
+as any other write. As an image (the default) in order:
 
 1. Argument checks raise `ValueError`: exactly one of `svg` / `image_url`,
    exactly one of `placeholder` / `box`, `fit` only with a placeholder,
-   `editable` must be false. A placeholder without `confirm_destructive`
-   returns `_refusal` before any read, render or upload.
+   `editable` only with `svg` and never with `fit="cover"`. A placeholder
+   without `confirm_destructive` returns `_refusal` before any read, render
+   or upload.
 2. In a worker thread (`_place_image`): for SVG, `store.check_image_hosting()`
    fails fast over stdio or with no bucket. Read the deck once; an unknown
    slide is error kind `target`. For a placeholder, find shapes on the slide
@@ -196,6 +197,45 @@ its stderr, writes the PNG to the real stdout, and the parent turns `No match
 for ... font-family` lines into warnings. It also bounds a slow SVG with a
 30 s timeout. A small SVG renders in about 0.06 s, child start included.
 
+### `editable=true`: native shapes (`svg_native.py`, `_place_editable` at server.py 1420)
+
+`svg_native.convert(svg, page_id, box)` turns a subset of SVG into
+`createShape` / `createLine` / text-box requests and returns a `Drawing`
+(requests, top-level object ids). No hosting, so it works over stdio.
+`_place_editable` converts once before reading the deck, so an unsupported
+SVG costs no API call; then it finds the target and converts again per box.
+A placeholder is `deleteObject` on every shape holding the marker, each
+followed by its own drawing in that shape's page bounding box, all in one
+batch. The refusal for a placeholder without `confirm_destructive` names
+`deleteObject`.
+
+- **One walk, every problem.** `_Builder.walk` builds requests and collects
+  each unsupported element, attribute, `style` property, transform, colour
+  and zero-size element. Any problem raises `Unsupported` listing them all;
+  nothing is sent. The subset is in the tool docstring.
+- **Fit.** viewBox to box as `xMidYMid meet`, the same fit `svg_raster`
+  gives the raster, so both outputs land in the same place. `g` transforms
+  compose as `(sx, sy, tx, ty)`; stroke width and font size scale by the mean
+  of `|sx|` and `|sy|`.
+- **Fill and outline always written**, `NOT_RENDERED` for none: a bare shape
+  gets the theme's fill and outline. An unstroked `line` is skipped.
+- **Lines** carry direction in the sign of `scaleX` / `scaleY` with the start
+  point as the translate. A marker's single child picks the arrow:
+  closed and filled path or polygon is `FILL_ARROW`, otherwise `OPEN_ARROW`;
+  circle is `FILL_CIRCLE` or `OPEN_CIRCLE`. No connector binding.
+- **Text placement** uses two measured constants because Slides refuses
+  `textInsets`: a 7.2 pt inner margin, and the first baseline
+  `6.75 + 0.9625 x size` pt below the top of a TOP-aligned box
+  (`text_box_top`). `dominant-baseline` `middle`/`central` moves the baseline
+  0.35 em down, `hanging` 0.75 em. Box width is 1.6 x an estimate plus margins,
+  because a narrow box wraps silently. Fonts go through `font_family`
+  (`docs/traps/generic-font-family-renders-as-serif.md`).
+- **Grouping.** Two or more elements end with one `groupObjects`; one element
+  is left alone (Slides refuses a group of one). Ids are `svg<6 hex>_NNN`
+  and `..._grp`, over the 5-character minimum.
+- `CUSTOM` is never sent (`docs/traps/custom-shape-type-creates-invisible-shape.md`);
+  paths and polygons are refused instead.
+
 ## Tests
 
 `tests/unit/test_write_wedge.py` monkeypatches `slides_api` and covers the
@@ -209,3 +249,6 @@ thumbnail asked for and its size and can be told to fail or to block one.
 answers `createImage` and `replaceAllShapesWithImage` like Slides, including
 the empty reply) and a `HostedStateStore` whose storage client is a fake GCS
 bucket. `tests/unit/test_svg_raster.py` runs the real renderer.
+`tests/unit/test_place_image_editable.py` feeds SVG to `place_image(editable=True)`
+over the fake and asserts on the recorded requests, one test per supported
+element plus rejection, grouping and placeholder cases.
