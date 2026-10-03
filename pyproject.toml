@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 # `slides-mcp serve-http` only: the Firestore auth store. stdio needs none of it.
 http = [
+    "google-cloud-storage>=3.16.0",
     "py-key-value-aio[firestore]",
 ]
 
