@@ -157,6 +157,42 @@ def test_credentials_that_cannot_sign_get_a_clear_error(clock):
     assert storage.the_bucket.objects == {}
 
 
+def test_metadata_credentials_sign_with_a_cloud_platform_token(clock):
+    # Cloud Run's storage client holds a token scoped to storage only; the IAM
+    # signBlob call refuses it with ACCESS_TOKEN_SCOPE_INSUFFICIENT.
+    class MetadataCredentials:
+        valid, token = True, "storage-only"
+        service_account_email = "runner@example.iam.gserviceaccount.com"
+
+        def __init__(self, scopes=None):
+            self.scopes = scopes
+
+        def with_scopes(self, scopes):
+            return ScopedCredentials(scopes)
+
+    class ScopedCredentials(MetadataCredentials):
+        valid, token = False, None
+
+        def refresh(self, request):
+            self.valid, self.token = True, f"token for {' '.join(self.scopes)}"
+
+    signed = {}
+
+    class SigningBlob(_FakeBlob):
+        def generate_signed_url(self, **kw):
+            signed.update(kw)
+            return "https://storage.googleapis.com/images/x?X-Goog-Signature=s"
+
+    storage = _FakeStorage()
+    storage._credentials = MetadataCredentials()
+    storage.the_bucket.blob = lambda name: SigningBlob(storage.the_bucket, name)
+    store = state_store.HostedStateStore(database="slides-mcp-auth", image_bucket="images",
+                                         clock=clock, storage_client=storage)
+    store.put_image(b"\x89PNG", content_type="image/png")
+    assert signed["service_account_email"] == "runner@example.iam.gserviceaccount.com"
+    assert signed["access_token"] == "token for https://www.googleapis.com/auth/cloud-platform"
+
+
 def test_hosted_store_without_a_bucket_names_the_missing_setting(clock):
     store = state_store.HostedStateStore(database="slides-mcp-auth", image_bucket=None,
                                          clock=clock)

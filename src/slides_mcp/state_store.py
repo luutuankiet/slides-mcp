@@ -19,6 +19,7 @@ PLANS_COLLECTION = "slides-mcp__plans"
 IMAGE_PREFIX = "slides-mcp/"
 IMAGE_URL_TTL_SECONDS = 300
 _EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif"}
+_CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
 
 _STDIO_IMAGE_MESSAGE = (
     "Hosting an image for Google to fetch needs the hosted server "
@@ -201,10 +202,12 @@ def _signing_kwargs(storage_client) -> dict[str, str]:
             "hold no private key and belong to no service account (for example a user "
             "account). Run it as a service account that can sign as itself; see "
             "docs/deploying-to-cloud-run.md, one-time setup step 10.")
-    if not creds.valid:
-        creds.refresh(Request())
-    return {"service_account_email": creds.service_account_email,
-            "access_token": creds.token}
+    # The storage client's token is scoped to storage only; signBlob refuses it.
+    signer = creds.with_scopes([_CLOUD_PLATFORM]) if hasattr(creds, "with_scopes") else creds
+    if not signer.valid:
+        signer.refresh(Request())
+    return {"service_account_email": signer.service_account_email,
+            "access_token": signer.token}
 
 
 _current: MemoryStateStore | HostedStateStore = MemoryStateStore()
