@@ -1113,9 +1113,11 @@ async def run_deck_script(
     if not dry_run and (msg := writes.write_scope_error()):
         return {"deck_id": deck_id, "dry_run": False, "isError": True,
                 "error": {"kind": "auth", "message": msg}}
+    # The hosted store is a blocking Firestore round trip: keep it off the loop.
+    store, caller = state_store.current(), auth.caller_id()
     if plan_id is not None:
-        plan = state_store.current().load_plan(plan_id, deck_id=deck_id,
-                                               caller=auth.caller_id())
+        plan = await anyio.to_thread.run_sync(lambda: store.load_plan(
+            plan_id, deck_id=deck_id, caller=caller))
         if plan is None:
             return _plan_error(deck_id, dry_run, _PLAN_GONE)
         script, value, limits = plan["script"], plan["input"], plan["limits"]
@@ -1129,12 +1131,12 @@ async def run_deck_script(
     if limit_notes:
         out.setdefault("warnings", []).extend(limit_notes)
     if dry_run and not out.get("isError"):
-        out["preview"]["plan_id"] = state_store.current().save_plan(
+        out["preview"]["plan_id"] = await anyio.to_thread.run_sync(lambda: store.save_plan(
             {"script": script, "input": value, "limits": limits},
-            deck_id=deck_id, caller=auth.caller_id())
+            deck_id=deck_id, caller=caller))
     if plan_id is not None and not out.get("isError"):
         # Applied: a second apply would repeat the edits on top of themselves.
-        state_store.current().expire_plan(plan_id)
+        await anyio.to_thread.run_sync(lambda: store.expire_plan(plan_id))
     if dry_run or out.get("isError") or receipt == "off":
         return out
 
