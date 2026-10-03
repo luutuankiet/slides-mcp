@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import anyio
 import httpx2 as httpx
@@ -29,9 +30,9 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list:
     seen: list = []
     monkeypatch.setattr(slides_api, "build",
                         lambda *a, credentials, **k: seen.append(credentials) or object())
-    slides_api._stdio_service.cache_clear()
+    slides_api._stdio_reset()
     yield seen
-    slides_api._stdio_service.cache_clear()
+    slides_api._stdio_reset()
 
 
 @pytest.fixture
@@ -53,6 +54,16 @@ def test_stdio_resolves_from_token_json_and_caches(built, monkeypatch):
     first, second = slides_api._slides_service(), slides_api._slides_service()
     assert first is second
     assert calls == [1] and built == ["file-creds"]
+
+
+def test_stdio_gives_each_thread_its_own_client(built, monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth, "load_credentials", lambda: calls.append(1) or "file-creds")
+    here = slides_api._slides_service()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        there = pool.submit(slides_api._slides_service).result()
+    assert here is not there
+    assert calls == [1] and built == ["file-creds", "file-creds"]
 
 
 def test_http_builds_from_caller_token_and_caches_nothing(built, http):
