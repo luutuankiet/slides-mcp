@@ -25,10 +25,11 @@ Two new tools (see "v2.1 write wedge" below). Both ship with a multi-granularity
 | Tool | Purpose |
 |------|---------|
 | `auth_status()` | Token state without exposing secrets |
+| `create_deck(title)` | **(v2.6)** Create a new, empty deck in the signed-in user's Drive root |
 | `get_deck_outline(deck_url)` | ~20 tok/slide whole-deck index — first call on every new deck |
 | `read_slides(deck_url, slides?, detail?, include_notes?, include_images?, notes_format?)` | Read one or many slides at chosen detail; `notes_format="markdown"` returns notes with their formatting |
 | `search_deck(deck_url, query, slides?, regex?, include_notes?)` | Substring or regex search across deck |
-| `render_thumbnail(deck_url, slide_id, size?)` | One slide as native PNG (`ImageContent`) |
+| `render_thumbnail(deck_url, slide_id, size?)` | One slide as native PNG (`ImageContent`), after a one-line note asking the model to say so if it cannot see it |
 | `exec_batch_update(deck_url, requests, dry_run?, confirm_destructive?, post_state?)` | **(v2.1)** Raw passthrough to Slides `batchUpdate` + multi-granularity post-state return |
 | `add_section_footers(deck_url, sections, template?, ...)` | **(v2.1)** Add chapter/section footer to every slide; idempotent re-runs |
 | `write_speaker_notes(deck_url, notes, mode?, dry_run?, confirm_destructive?)` | **(v2.2)** Speaker notes from Markdown for many slides in one batch; real bold, italic, headers and bullets |

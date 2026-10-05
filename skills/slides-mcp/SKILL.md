@@ -69,6 +69,11 @@ Slides API edits target objectIds. Two shapes:
 
 Slides API uses **EMU** (English Metric Unit). 1 inch = 914400 EMU.
 
+`read_slides(detail="raw")` reports `at: [left, top, width, height]` in
+**inches**, not EMU. Multiply by 914400 before writing. A create with a width
+or height under 1 pt is refused, because Google would silently replace that
+size with its 3,000,000 EMU default square.
+
 | Item | EMU |
 |---|---|
 | 16:9 deck width | 9144000 (10 in) |

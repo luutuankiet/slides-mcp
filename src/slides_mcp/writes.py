@@ -2,11 +2,12 @@
 
 It owns the 403 re-consent message, the audit line, and the helpers that
 look at a request list without sending it: destructive kinds, affected
-slides, unknown object ids.
+slides, unknown object ids, sizes too small to be EMU.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -102,6 +103,9 @@ def apply_batch(
     extra_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One atomic batchUpdate. A failing request leaves the deck unchanged."""
+    problems = size_problems(requests)
+    if problems:
+        raise ValueError("Refused, nothing was written: " + "; ".join(problems))
     try:
         resp = slides_api.batch_update(deck_id, requests)
     except slides_api.SlidesApiError as e:
@@ -187,6 +191,43 @@ def unknown_ids(requests: list[dict[str, Any]], prez: dict[str, Any]) -> list[st
         if missing:
             problems.append(f"request #{i} ({kind}) names unknown object id(s) {missing}")
         known.update(created_ids(req))
+    return problems
+
+
+EMU_PER_IN = 914400
+EMU_PER_PT = 12700
+# createLine is exempt: a horizontal or vertical rule has a zero dimension.
+_SIZED_CREATES = ("createShape", "createImage", "createVideo", "createSheetsChart")
+UNITS_HINT = "Geometry is EMU: 1 in = 914400 EMU, 1 pt = 12700 EMU."
+
+
+def size_problems(requests: list[dict[str, Any]]) -> list[str]:
+    """One string per create whose width or height is not a number or is under
+    1 pt. Google stores a tiny size as its 3,000,000 EMU default square without
+    an error, which is what inches passed as EMU produce."""
+    problems: list[str] = []
+    for i, req in enumerate(requests):
+        if not req:
+            continue
+        (kind, body), = req.items()
+        if kind not in _SIZED_CREATES or not isinstance(body, dict):
+            continue
+        size = (body.get("elementProperties") or {}).get("size")
+        if not isinstance(size, dict):
+            continue
+        oid = body.get("objectId")
+        label = f"request #{i} ({kind} {oid})" if oid else f"request #{i} ({kind})"
+        for dim in ("width", "height"):
+            d = size.get(dim)
+            mag = d.get("magnitude") if isinstance(d, dict) else None
+            unit = d.get("unit", "EMU") if isinstance(d, dict) else "EMU"
+            if not isinstance(mag, (int, float)) or isinstance(mag, bool) or not math.isfinite(mag):
+                problems.append(f"{label}: {dim} is {mag!r}, not a number. {UNITS_HINT}")
+                continue
+            emu = mag * EMU_PER_PT if unit == "PT" else mag
+            if emu < EMU_PER_PT:
+                problems.append(f"{label}: {dim} {mag:g} {unit} is under 1 pt. "
+                                f"Did you pass inches? {UNITS_HINT}")
     return problems
 
 

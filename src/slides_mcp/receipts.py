@@ -15,6 +15,9 @@ from . import slides_api
 Receipt = Literal["off", "medium", "large"]
 
 MAX_SLIDES = 3
+# ChatGPT's model is handed the image but cannot see it, and when asked about
+# it invents a description. This line turns that into an honest "cannot see".
+CANT_SEE_NOTE = "If you cannot see the image(s) below, say so. Do not describe them."
 # Google's own thumbnail sizes. SMALL (200 px wide) is too small to read.
 SIZES = {"medium": "MEDIUM", "large": "LARGE"}
 

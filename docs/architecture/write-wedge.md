@@ -1,7 +1,7 @@
 ---
 title: Write wedge (exec_batch_update, add_section_footers, write_speaker_notes, place_image)
 covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises, hosts and places an image, how editable SVG becomes native shapes
-verified: 2026-10-03
+verified: 2026-10-05
 ---
 
 # Write wedge
@@ -83,7 +83,11 @@ does a dry run or a refused write.
 - **Reply shape.** With at least one image, the tool returns a list: the JSON
   body as text, then one image per slide. With none it returns the plain
   dict, as before. The body gains `thumbnails {size, slide_ids,
-  not_shown_slide_ids?, hint?}`.
+  not_shown_slide_ids?, hint?, note}`. `note` asks the model to say so if it
+  cannot see the images: ChatGPT receives them intact (checked on 2026-10-05,
+  an 800x450 PNG byte-identical to `render_thumbnail`'s), yet its model either
+  says it cannot read them or invents their contents. `render_thumbnail`
+  sends the same line as a text block before its image.
 - **Concurrent, each tried once.** `receipts.render` fetches the thumbnails
   in a thread pool, each worker in a copy of the caller's context (HTTP mode
   reads the signed-in caller from it). One after another they added about
@@ -96,6 +100,29 @@ does a dry run or a refused write.
 In stdio mode each thread builds its own Slides client
 (`slides_api._stdio_service`), because the client's HTTP transport is not
 thread-safe.
+
+## Size guard and layout warnings (`writes.size_problems`, `layout.py`)
+
+Geometry in requests is EMU, while `read_slides(detail="raw")` reports `at`
+in inches. Inches passed as EMU (`w: 3`) are accepted by Google without an
+error: it stores its 3,000,000 EMU default square at the tiny translate, so
+the box sits at the top-left corner as a 3.281 in square. Checked live on
+2026-10-05; a missing magnitude, by contrast, is a 400.
+
+- **Refused before sending.** `writes.size_problems` flags a width or height
+  that is not a number or is under 1 pt on `createShape`, `createImage`,
+  `createVideo` and `createSheetsChart` (`createLine` is exempt: rules have a
+  zero side). `apply_batch` raises on it, `exec_batch_update` returns an
+  `isError` reply before its dry run, and `run_deck_script` fails the phase as
+  `validation`, dry run included. The `textBox`, `resize` and `move` helpers
+  throw the same complaint, located at the script's line.
+- **Warned after writing.** `layout.check` runs on the re-read deck against
+  the ids the write created (named in requests or assigned in replies) and
+  returns one sentence per element at the default square, per group of three
+  or more new elements with identical geometry, and per element partly or
+  fully off the page. Existing elements are never reported. Without a
+  re-read (`post_state="none"` and `receipt="off"`) the reply says the check
+  was skipped. A real `run_deck_script` apply reads the deck once more for it.
 
 ## `affected_slide_ids` (writes.py 177–225)
 

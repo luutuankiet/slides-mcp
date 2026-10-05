@@ -20,7 +20,8 @@ caller signs in with their own Google account.
 - **Every write goes through `writes.apply_batch`.** Destructive request kinds
   need `confirm_destructive=True`; convenience tools build requests and delegate
   to `exec_batch_update`, and deck scripts send each phase through the same
-  function.
+  function. It also refuses sizes under 1 pt (inches passed as EMU).
+  `create_deck` is the one exception: it makes a new deck, not a batch.
 - **Never commit credentials.** `token.json` and client secrets are gitignored.
 
 ## Layout
@@ -35,6 +36,7 @@ src/slides_mcp/sandbox/       — V8 worker process and the JS prelude scripts s
 src/slides_mcp/deck_model.py  — the deck snapshot scripts read
 src/slides_mcp/skill_bundle.py — finds the shipped skill (wheel copy or checkout) for install_skill
 src/slides_mcp/receipts.py    - thumbnails of the slides a write touched, attached to its reply
+src/slides_mcp/layout.py      - text warnings after a write: new elements at Google's default size, stacked, off page
 src/slides_mcp/notes_md.py    — Markdown to speaker-notes requests and back
 src/slides_mcp/slides_api.py  — Slides REST wrapper, field masks, deck-id parsing
 src/slides_mcp/normalize.py   — Slides API pageElement JSON → FlatShape

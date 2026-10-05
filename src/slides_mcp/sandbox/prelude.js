@@ -207,10 +207,24 @@ function setBackground(slide, hex) {
   } };
 }
 
+// Geometry is EMU. Inches passed as EMU (w: 3) give a size Google silently
+// replaces with its 3,000,000 EMU default square, so refuse them here.
+function __checkGeom(fn, opts, keys, required) {
+  for (const k of keys) {
+    const v = opts[k];
+    if (v === undefined && !required) continue;
+    if (typeof v !== "number" || !Number.isFinite(v))
+      throw new RangeError(`${fn}: ${k} is ${JSON.stringify(v)}, not a number. Expected {x, y, w, h} in EMU: 1 in = 914400 EMU; helpers.inch(n) converts.`);
+    if ((k === "w" || k === "h") && v < EMU_PER_PT)
+      throw new RangeError(`${fn}: ${k} ${v} is under 1 pt. Did you pass inches? Geometry is EMU: 1 in = 914400 EMU; helpers.inch(n) converts.`);
+  }
+}
+
 // Resize and/or move an unrotated element, pinning one edge.
 //   opts: {w, h, x, y} in EMU (page space); pin: "left"|"right"|"center"
 //   horizontally and pinY: "top"|"bottom"|"middle" vertically.
 function resize(el, opts) {
+  __checkGeom("resize", opts, ["x", "y", "w", "h"], false);
   if (el.rotation) throw new RangeError(`resize() supports unrotated elements only (${el.id} is rotated ${el.rotation} deg)`);
   const t = el.transform || {};
   const [pa, , , pd] = el.parentMatrix || [1, 0, 0, 1, 0, 0];
@@ -244,6 +258,7 @@ function move(el, x, y) { return resize(el, { x, y }); }
 // API otherwise leaves to a default that resizes text unpredictably.
 //   opts: {id?, text, x, y, w, h (EMU), style?}
 function textBox(slide, opts) {
+  __checkGeom("textBox", opts, ["x", "y", "w", "h"], true);
   const id = opts.id || newId("tb");
   const reqs = [
     { createShape: { objectId: id, shapeType: "TEXT_BOX", elementProperties: {

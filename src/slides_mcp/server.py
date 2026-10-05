@@ -28,6 +28,7 @@ from . import (
     __version__,
     auth,
     classify,
+    layout,
     normalize,
     notes_md,
     projection,
@@ -57,9 +58,21 @@ mcp._mcp_server.notification_options.tools_changed = False
 _fastmcp_tool = mcp.tool
 
 
-def _tool():
+def _tool(hints: dict[str, bool]):
     # Keep the whole docstring as the description; fastmcp would drop Returns.
-    return lambda fn: _fastmcp_tool(description=fn.__doc__)(fn)
+    # Clients treat a tool with no hints as destructive, so every tool sets all four.
+    return lambda fn: _fastmcp_tool(description=fn.__doc__, annotations=hints)(fn)
+
+
+def _hints(read_only: bool, destructive: bool, idempotent: bool) -> dict[str, bool]:
+    return {"readOnlyHint": read_only, "destructiveHint": destructive,
+            "idempotentHint": idempotent, "openWorldHint": True}
+
+
+_READ = _hints(read_only=True, destructive=False, idempotent=True)
+_ADD = _hints(read_only=False, destructive=False, idempotent=False)
+_REPLACE = _hints(read_only=False, destructive=True, idempotent=True)
+_EDIT = _hints(read_only=False, destructive=True, idempotent=False)
 
 
 class _CallLog(Middleware):
@@ -213,7 +226,7 @@ def _slide_shapes(ctx: normalize.DeckContext, slide: dict[str, Any]) -> list[nor
 # ---- tools ----------------------------------------------------------
 
 
-@_tool()
+@_tool(_READ)
 def auth_status() -> dict[str, Any]:
     """Diagnostic: report sign-in state without exposing secrets.
 
@@ -223,7 +236,7 @@ def auth_status() -> dict[str, Any]:
     return auth.credentials_info()
 
 
-@_tool()
+@_tool(_READ)
 def install_skill() -> dict[str, Any]:
     """Return the slides-mcp agent skill (every file, with its path) plus install steps.
 
@@ -236,7 +249,7 @@ def install_skill() -> dict[str, Any]:
     return skill_bundle.bundle()
 
 
-@_tool()
+@_tool(_READ)
 def get_deck_outline(deck_url: str) -> dict[str, Any]:
     """Cheap whole-deck index. ~20 tok/slide. First call on any new deck.
 
@@ -257,7 +270,7 @@ def get_deck_outline(deck_url: str) -> dict[str, Any]:
     return _project_deck_outline(prez, deck_id=deck_id)
 
 
-@_tool()
+@_tool(_READ)
 def read_slides(
     deck_url: str,
     slides: Any = None,
@@ -282,7 +295,10 @@ def read_slides(
                          "outline"  → title + arch + counts (~20 tok)
                          "summary"  → title + body + notes preview (~80 tok)
                          "full"     → all text + image refs + notes (~150 tok)
-                         "raw"      → faithful: geometry + style (debug, ~400 tok)
+                         "raw"      → faithful: geometry + style (debug, ~400 tok).
+                                      `at` is in INCHES; writes take EMU
+                                      (1 in = 914400 EMU). The reply's `units`
+                                      key says so too.
       include_notes:   Include speaker notes in summary/full. Default True.
       include_images:  "ref" → emit `ref://<object_id>` for picture elements
                                 (use `render_thumbnail` to actually see them).
@@ -347,16 +363,23 @@ def read_slides(
                 row["background"] = bg
         out.append(row)
 
-    return {
+    reply: dict[str, Any] = {
         "deck_id": deck_id,
         "title": prez.get("title", ""),
         "slide_count": len(out),
         "detail": detail,
-        "slides": out,
     }
+    if detail == "raw":
+        reply["units"] = RAW_UNITS
+    reply["slides"] = out
+    return reply
 
 
-@_tool()
+RAW_UNITS = ("at is [left, top, width, height] in inches. Writes and script helpers take "
+             "EMU: 1 in = 914400 EMU (helpers.inch(n) converts).")
+
+
+@_tool(_READ)
 def search_deck(
     deck_url: str,
     query: str,
@@ -439,12 +462,12 @@ def search_deck(
     }
 
 
-@_tool()
+@_tool(_READ)
 def render_thumbnail(
     deck_url: str,
     slide_id: str,
     size: ThumbSize = "MEDIUM",
-) -> Image:
+) -> Any:
     """Render one slide as a PNG and return as native MCP ImageContent.
 
     Expensive — opt in deliberately. Each thumbnail costs ~640-2700 tokens
@@ -452,8 +475,10 @@ def render_thumbnail(
     for `render_thumbnail` only when the visual layout matters.
 
     For multiple slides: call this tool in parallel (the MCP transport
-    supports concurrent calls) — keeping the response single-image keeps the
-    return type clean and predictable.
+    supports concurrent calls); each reply carries one image.
+
+    Returns: one line of text, then the image. Some clients do not show the
+    image to the model; the text line asks you to say so rather than describe it.
 
     Args:
       slide_id: Slides API object ID for the target page.
@@ -463,10 +488,43 @@ def render_thumbnail(
         raise ValueError(f"size must be SMALL|MEDIUM|LARGE; got {size!r}")
     deck_id = slides_api.deck_id_from_url(deck_url)
     png = slides_api.get_thumbnail_bytes(deck_id, slide_id, size=size)
-    return Image(data=png, format="png")
+    return [receipts.CANT_SEE_NOTE, Image(data=png, format="png")]
 
 
-@_tool()
+@_tool(_ADD)
+def create_deck(title: str) -> dict[str, Any]:
+    """Create a new, empty Google Slides deck with this title.
+
+    The deck lands in the root of the signed-in user's Google Drive, owned by
+    them, with Google's default theme and one title slide. There is no folder
+    or template option. Edit it next with `run_deck_script` or
+    `exec_batch_update`, passing `deck_id`.
+
+    Args:
+      title: The deck's name. Required, non-empty.
+
+    Returns:
+      {deck_id, deck_url, title, first_slide_id, deck_outline, isError}
+      `deck_outline` is what `get_deck_outline` returns for the new deck.
+    """
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("title must be a non-empty string")
+    prez = slides_api.create_presentation(title)
+    deck_id = prez["presentationId"]
+    writes.audit({"tool": "create_deck", "deck_id": deck_id})
+    slides = prez.get("slides") or []
+    return {
+        "deck_id": deck_id,
+        "deck_url": f"https://docs.google.com/presentation/d/{deck_id}/edit",
+        "title": prez.get("title", title),
+        "first_slide_id": slides[0]["objectId"] if slides else None,
+        "deck_outline": _project_deck_outline(prez, deck_id=deck_id),
+        "isError": False,
+    }
+
+
+@_tool(_EDIT)
 def exec_batch_update(
     deck_url: str,
     requests: list[dict],
@@ -530,12 +588,20 @@ def exec_batch_update(
                             thumbnail is a warning, never an error: the
                             write has landed.
 
+    A create whose width or height is under 1 pt (12700 EMU), or not a number,
+    is refused before anything is sent: geometry is EMU, and inches passed as
+    EMU make Google silently use its 3,000,000 EMU default square instead.
+    After a write, `warnings` names any element it created that sits at that
+    default size, is stacked exactly on two or more other new elements, or is
+    partly or fully off the page. Read them: some clients cannot show the
+    receipt image to the model, so these lines may be your only check.
+
     Returns (always):
       {applied_request_count, request_kinds, replies, warnings, isError}
     Returns (when post_state != "none"):
       + {affected_slide_ids, post_state: {deck_outline, slides?}}
     Returns (when a receipt is attached):
-      + {thumbnails: {size, slide_ids, not_shown_slide_ids?, hint?}}, sent
+      + {thumbnails: {size, slide_ids, not_shown_slide_ids?, hint?, note}}, sent
       as a JSON text block followed by one image per rendered slide.
 
     Raises:
@@ -578,6 +644,15 @@ def _apply_requests(
     request_kinds = writes.request_kinds(requests)
     destructive = [k for k in request_kinds if k in DESTRUCTIVE_KINDS]
 
+    if sizes := writes.size_problems(requests):
+        return {
+            "applied_request_count": 0,
+            "request_kinds": request_kinds,
+            "replies": [],
+            "warnings": [f"Refused, nothing was written: {p}" for p in sizes],
+            "isError": True,
+        }, []
+
     if dry_run:
         return {
             "dry_run": True,
@@ -596,13 +671,14 @@ def _apply_requests(
     api_response = writes.apply_batch(deck_id, requests, tool=tool)
 
     replies = api_response.get("replies", []) or []
+    created = layout.created_ids(requests, replies)
 
     if post_state == "none" and not want_slides:
         return {
             "applied_request_count": len(requests),
             "request_kinds": request_kinds,
             "replies": replies,
-            "warnings": [],
+            "warnings": [_LAYOUT_SKIPPED] if created else [],
             "isError": False,
         }, []
 
@@ -610,12 +686,13 @@ def _apply_requests(
     prez = slides_api.get_presentation(deck_id)
     affected_slide_ids = _extract_affected_slide_ids(requests, replies, prez)
     touched = receipts.in_deck_order(affected_slide_ids, prez)
+    layout_warnings = layout.check(created, prez)
     if post_state == "none":
         return {
             "applied_request_count": len(requests),
             "request_kinds": request_kinds,
             "replies": replies,
-            "warnings": [],
+            "warnings": layout_warnings,
             "isError": False,
         }, touched
 
@@ -649,11 +726,15 @@ def _apply_requests(
         "applied_request_count": len(requests),
         "request_kinds": request_kinds,
         "replies": replies,
-        "warnings": [],
+        "warnings": layout_warnings,
         "affected_slide_ids": affected_slide_ids,
         "post_state": post_state_envelope,
         "isError": False,
     }, touched
+
+
+_LAYOUT_SKIPPED = ("layout check skipped: no post-write read (post_state=\"none\" with "
+                   "receipt=\"off\"), so new elements were not checked for position or size.")
 
 
 def _refusal(request_kinds: list[str]) -> dict[str, Any]:
@@ -688,6 +769,7 @@ def _attach_receipt(
     out.setdefault("warnings", []).extend(warnings)
     if not pngs:
         return out
+    field["note"] = receipts.CANT_SEE_NOTE
     return [json.dumps(out, ensure_ascii=False), *(Image(data=p, format="png") for p in pngs)]
 
 
@@ -701,7 +783,7 @@ _FOOTER_FONT_PT = 9
 _FOOTER_OBJID_PREFIX = "slides_mcp_footer_"
 
 
-@_tool()
+@_tool(_ADD)
 def add_section_footers(
     deck_url: str,
     sections: list[dict],
@@ -911,7 +993,7 @@ def add_section_footers(
     return _attach_receipt(result, deck_url, touched, receipt)
 
 
-@_tool()
+@_tool(_REPLACE)
 def write_speaker_notes(
     deck_url: str,
     notes: dict[str, str],
@@ -991,7 +1073,7 @@ def _plan_error(deck_id: str, dry_run: bool, message: str) -> dict[str, Any]:
             "error": {"kind": "plan", "message": message}}
 
 
-@_tool()
+@_tool(_EDIT)
 async def run_deck_script(
     deck_url: str,
     script: str | None = None,
@@ -1046,6 +1128,8 @@ async def run_deck_script(
                NONE), setNotes(slide, markdown, {mode}) (returns a request to
                emit). Friendly style keys: fontFamily, weight, bold, italic,
                underline, sizePt, color ("#hex" or {theme}).
+               Geometry in textBox, resize and move is EMU: inch(n) converts.
+               A width or height under 1 pt (inches passed as EMU) throws.
       console.log          captured into `logs`.
     `return x` delivers x as native JSON in `result` (truncated past
     `max_return_bytes`). Return a small summary, not the deck.
@@ -1192,7 +1276,7 @@ def _box_pt(box: Any) -> tuple[float, float, float, float]:
     return x, y, w, h
 
 
-@_tool()
+@_tool(_ADD)
 async def place_image(
     deck_url: str,
     slide_id: str,

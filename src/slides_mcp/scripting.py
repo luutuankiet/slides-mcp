@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import deck_model, normalize, notes_md, slides_api, writes
+from . import deck_model, layout, normalize, notes_md, slides_api, writes
 
 # (default, ceiling)
 LIMITS = {
@@ -406,6 +406,7 @@ def run(
     warnings: list[str] = []
     logs: list[str] = []
     all_requests: list[dict[str, Any]] = []
+    all_replies: list[dict[str, Any]] = []
     result_json = "null"
     notes_state: dict[str, dict[str, Any] | None] = {}
 
@@ -441,7 +442,7 @@ def run(
             exempt: list[dict[str, Any]] = []
             phase = expand_notes(msg.get("requests") or [], prez, notes_state, exempt)
             if phase:
-                problems = writes.unknown_ids(phase, prez)
+                problems = writes.unknown_ids(phase, prez) + writes.size_problems(phase)
                 if problems:
                     raise ScriptFailure("validation", "; ".join(problems[:5]) + (
                         f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
@@ -480,6 +481,7 @@ def run(
                     raise ScriptFailure("api", str(e), **extra) from e
                 receipt.add(phase, writes.affected_slide_ids(phase, resp.get("replies") or [], prez))
                 all_requests.extend(phase)
+                all_replies.extend(resp.get("replies") or [])
             if op == "commit":
                 prez = slides_api.get_presentation(deck_id)
                 snap = deck_model.build(prez)
@@ -533,6 +535,13 @@ def run(
             warnings.append(trunc)
         out["result"] = result_value
         out["receipt"] = receipt.as_dict()
+        if created := layout.created_ids(all_requests, all_replies):
+            # The last phase's writes are not in `prez` yet; read once more.
+            try:
+                prez = slides_api.get_presentation(deck_id)
+                warnings.extend(layout.check(created, prez))
+            except slides_api.SlidesApiError as e:
+                warnings.append(f"layout check skipped: the deck could not be re-read ({e})")
         if include_requests:
             out["requests"] = all_requests
     out["warnings"] = warnings
