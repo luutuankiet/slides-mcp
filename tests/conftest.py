@@ -15,6 +15,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeSlides:
     api = FakeSlides()
     monkeypatch.setattr(slides_api, "get_presentation", api.get_presentation)
     monkeypatch.setattr(slides_api, "batch_update", api.batch_update)
+    monkeypatch.setattr(slides_api, "create_presentation", api.create_presentation)
     monkeypatch.setattr(slides_api, "get_thumbnail_bytes", api.get_thumbnail_bytes)
     monkeypatch.setattr(auth, "credentials_info", lambda: {"exists": True, "scopes": WRITE_SCOPES})
     monkeypatch.delenv("SLIDES_MCP_AUDIT_LOG", raising=False)

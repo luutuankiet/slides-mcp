@@ -25,6 +25,9 @@ from typing import Any
 
 MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
 _LOC_RE = re.compile(r"(?:script\.js|<anonymous>):(\d+)(?::(\d+))?")
+# The user's source carries sourceURL=script.js; the prelude is <anonymous>.
+# A helper that throws puts its own frame first, so prefer the script's.
+_SCRIPT_LOC_RE = re.compile(r"script\.js:(\d+)(?::(\d+))?")
 # The wrapper puts one line in front of the user's source.
 LINE_OFFSET = 1
 
@@ -42,7 +45,7 @@ def _recv() -> dict[str, Any]:
 
 
 def _locate(text: str) -> dict[str, int]:
-    m = _LOC_RE.search(text or "")
+    m = _SCRIPT_LOC_RE.search(text or "") or _LOC_RE.search(text or "")
     if not m:
         return {}
     out = {"line": max(int(m.group(1)) - LINE_OFFSET, 1)}

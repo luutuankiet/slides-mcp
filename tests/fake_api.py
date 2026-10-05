@@ -153,6 +153,7 @@ class FakeSlides:
     def __init__(self, deck: dict[str, Any] | None = None):
         self.deck = deck or load_deck()
         self.batches: list[list[dict[str, Any]]] = []
+        self.created: list[str] = []
         self.reads = 0
         self.fail: slides_api.SlidesApiError | None = None
         self.batch_delay = 0.0
@@ -165,6 +166,13 @@ class FakeSlides:
     def get_presentation(self, deck_id: str, fields: str | None = None) -> dict[str, Any]:
         self.reads += 1
         return copy.deepcopy(self.deck)
+
+    def create_presentation(self, title: str) -> dict[str, Any]:
+        self.created.append(title)
+        return {"presentationId": f"new_deck_{len(self.created)}", "title": title,
+                "pageSize": copy.deepcopy(self.deck.get("pageSize")),
+                "slides": [{"objectId": "p", "pageElements": []}],
+                "layouts": [], "masters": []}
 
     def batch_update(self, deck_id: str, requests: list[dict]) -> dict:
         if self.batch_delay:

@@ -155,6 +155,13 @@ def get_presentation(deck_id: str, fields: str = DECK_FIELDS) -> dict[str, Any]:
     return _call(svc.presentations().get, presentationId=deck_id, fields=fields)
 
 
+def create_presentation(title: str) -> dict[str, Any]:
+    """Create an empty presentation in the caller's Drive root. Needs only the
+    `presentations` scope; placing it in a folder would need a Drive write scope."""
+    svc = _slides_service()
+    return _call(svc.presentations().create, body={"title": title})
+
+
 def get_slide(deck_id: str, slide_id: str) -> dict[str, Any]:
     """Fetch one slide with full text + notes fields."""
     svc = _slides_service()
