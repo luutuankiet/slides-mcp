@@ -40,6 +40,7 @@ Simply true, and expensive to re-derive.
 
 | page | summary | verified |
 |---|---|---|
+| [Claude for Google Workspace add-on compared with slides-mcp](reference/claude-google-workspace-addon.md) | what Anthropic's Slides sidebar add-on is, how it differs from the Claude Google Slides connector, and the add-on's own verdict on slides-mcp | 2026-10-07 |
 | [Cutting a release](reference/cutting-a-release.md) | the ordered steps that get a version onto GitHub Releases and PyPI without the tag-triggered workflow failing | 2026-09-28 |
 | [Google's Slides MCP server compared with slides-mcp](reference/google-slides-mcp.md) | what Google's hosted Slides MCP server (Developer Preview) offers, measured token cost and write guards side by side with slides-mcp, and how to repeat the measurements | 2026-09-28 |
 
