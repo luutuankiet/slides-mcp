@@ -39,6 +39,10 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 COLLECTION_PREFIX = "slides-mcp"
+# Claude's connector does not always refresh after a 401, so the server token lives
+# as long as Google's 7-day refresh limit for an OAuth app in Testing mode; the
+# server refreshes the Google grant itself on each request.
+ACCESS_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 _DB_ID_RE = re.compile(r"[a-z][a-z0-9-]{3,62}")
 _REQUIRED = (
@@ -179,6 +183,7 @@ def build_provider(settings: Settings, client_storage):
         redirect_path=REDIRECT_PATH,
         required_scopes=GOOGLE_SCOPES,
         client_storage=client_storage,
+        fastmcp_access_token_expiry_seconds=ACCESS_TOKEN_TTL_SECONDS,
     )
     # fastmcp has no validation cache; it calls this verifier on every request.
     # Private attribute, so fastmcp stays pinned below 5 and a test guards it.

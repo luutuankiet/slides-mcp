@@ -363,6 +363,11 @@ When those pass but signing in fails, Google's error page names the setting:
 | deleting the auth database | everyone signs in again (blocked by delete protection) |
 | Google refusing a refresh (revoked, suspended, unused for 6 months) | that one person signs in again |
 
+The server token lasts 7 days (`ACCESS_TOKEN_TTL_SECONDS` in `http_mode.py`),
+not Google's hour, because Claude's connector does not always refresh after a
+401; slides-mcp refreshes the Google grant itself, and an OAuth app in Testing
+mode still ends every Google refresh token after 7 days.
+
 ## Thumbnail quota is shared by the whole team
 
 Google allows **300 slide-thumbnail requests a minute per project** and 60 a

@@ -1,7 +1,7 @@
 ---
 title: Auth and entry points
 covers: where token.json is read from, how OAuth refresh and scopes work, what slides-mcp and slides-mcp-auth do on startup, how HTTP mode (serve-http) picks up each caller's Google token
-verified: 2026-10-03
+verified: 2026-11-02
 ---
 
 # Auth and entry points
@@ -104,3 +104,7 @@ The sign-in proxy calls Google's `tokeninfo` and `userinfo` on every request.
 expires; it is installed on the proxy's private `_token_validator`, which is
 why `fastmcp` is pinned below 5 and `test_provider_installs_cache_on_proxy_verifier`
 exists.
+
+`build_provider` passes `fastmcp_access_token_expiry_seconds=ACCESS_TOKEN_TTL_SECONDS`
+(7 days), so the server token outlives Google's one-hour access token and the
+proxy refreshes the Google grant on the request that finds it expired.
