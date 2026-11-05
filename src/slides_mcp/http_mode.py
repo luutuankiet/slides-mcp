@@ -24,7 +24,7 @@ environment variables only:
   SLIDES_MCP_GOOGLE_CLIENT_SECRET  yes       none
   SLIDES_MCP_BASE_URL              yes       none (the service's public https URL)
   SLIDES_MCP_FIRESTORE_DATABASE    yes       none (a database only slides-mcp uses)
-  SLIDES_MCP_IMAGE_BUCKET          no        none (images for Google to fetch; unset = no SVG upload)
+  SLIDES_MCP_IMAGE_BUCKET          no        none (images for Google to fetch; unset = no SVG or base64 image upload)
   PORT                             no        8080
 
 The Google OAuth client's redirect URI must be <SLIDES_MCP_BASE_URL>/auth/callback.

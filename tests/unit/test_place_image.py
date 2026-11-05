@@ -7,6 +7,7 @@ holds afterwards.
 """
 from __future__ import annotations
 
+import base64
 import json
 import struct
 from typing import Any
@@ -255,6 +256,10 @@ async def test_failed_cleanup_is_a_warning_not_an_error(fake, gcs, monkeypatch):
 
 @pytest.mark.parametrize("kwargs, message", [
     ({"svg": SVG, "image_url": "https://example.com/a.png", "box": BOX}, "exactly one of"),
+    ({"svg": SVG, "image_base64": "iVBORw0KGgo=", "box": BOX}, "exactly one of"),
+    ({"image_url": "https://example.com/a.png", "image_base64": "iVBORw0KGgo=",
+      "box": BOX}, "exactly one of"),
+    ({"image_base64": "iVBORw0KGgo=", "box": BOX, "editable": True}, "needs `svg`"),
     ({"box": BOX}, "exactly one of"),
     ({"svg": SVG}, "exactly one target"),
     ({"svg": SVG, "box": BOX, "placeholder": MARKER}, "exactly one target"),
@@ -266,3 +271,98 @@ async def test_bad_arguments_are_refused(fake, gcs, kwargs, message):
     with pytest.raises(ValueError, match=message):
         await place_image(DECK, slide_id=SLIDE, **kwargs)
     assert gcs.uploads == [] and fake.batches == []
+
+
+# ---- image_base64 -----------------------------------------------------------------
+
+# Just enough of each format for the magic-byte sniff; Google is faked.
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+GIF_BYTES = b"GIF89a" + b"\x00" * 32
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+@pytest.mark.parametrize("data, content_type", [
+    (PNG_BYTES, "image/png"), (JPEG_BYTES, "image/jpeg"), (GIF_BYTES, "image/gif"),
+])
+async def test_base64_into_a_box_uploads_the_sniffed_type_and_cleans_up(
+        fake, gcs, data, content_type):
+    body, _ = split(await place_image(DECK, slide_id=SLIDE, image_base64=b64(data), box=BOX))
+
+    assert body["isError"] is False, body
+    (request,), = fake.batches
+    create = request["createImage"]
+    assert create["elementProperties"]["pageObjectId"] == SLIDE
+    (name, uploaded, uploaded_type), = gcs.uploads
+    assert uploaded == data and uploaded_type == content_type
+    assert create["url"].startswith(f"https://storage.example/{name}?")
+    assert gcs.objects == {}
+    assert body["placed"]["source"] == "base64"
+    assert body["placed"]["target"] == "box"
+    assert any("aspect ratio" in w for w in body["warnings"])
+
+
+async def test_base64_into_a_placeholder_replaces_it(fake, gcs, marker_box):
+    body, _ = split(await place_image(DECK, slide_id=SLIDE, image_base64=b64(PNG_BYTES),
+                                      placeholder=MARKER, confirm_destructive=True))
+
+    assert body["isError"] is False, body
+    (request,), = fake.batches
+    replace = request["replaceAllShapesWithImage"]
+    assert replace["pageObjectIds"] == [SLIDE]
+    (name, _, content_type), = gcs.uploads
+    assert content_type == "image/png"
+    assert replace["imageUrl"].startswith(f"https://storage.example/{name}?")
+    assert gcs.objects == {}
+    assert body["placed"] == {"slide_id": SLIDE, "object_ids": [marker_box],
+                              "source": "base64", "target": "placeholder"}
+
+
+@pytest.mark.parametrize("value, message", [
+    ("not base64!!", "not valid base64"),
+    ("iVBORw0KGgo", "not valid base64"),  # bad padding
+    (b64(b"RIFF\x00\x00\x00\x00WEBPVP8 "), "not a PNG, JPEG or GIF"),
+    (b64(SVG.encode()), "not a PNG, JPEG or GIF"),
+])
+async def test_bad_base64_or_unknown_type_is_refused_before_any_work(
+        fake, gcs, value, message):
+    with pytest.raises(ValueError, match=message):
+        await place_image(DECK, slide_id=SLIDE, image_base64=value, box=BOX)
+    assert gcs.uploads == [] and fake.batches == []
+
+
+async def test_base64_over_50_mb_is_refused(fake, gcs, monkeypatch):
+    from slides_mcp import server
+    monkeypatch.setattr(server, "_MAX_IMAGE_BYTES", 30)
+    with pytest.raises(ValueError, match="more than 50 MB"):
+        await place_image(DECK, slide_id=SLIDE, image_base64=b64(PNG_BYTES), box=BOX)
+    assert gcs.uploads == [] and fake.batches == []
+
+
+async def test_base64_over_50_mb_decoded_is_refused_at_the_real_limit(fake, gcs):
+    big = b64(PNG_BYTES + b"\x00" * (50 * 1024 * 1024))
+    with pytest.raises(ValueError, match="more than 50 MB"):
+        await place_image(DECK, slide_id=SLIDE, image_base64=big, box=BOX)
+    assert gcs.uploads == [] and fake.batches == []
+
+
+async def test_base64_over_stdio_says_it_needs_the_hosted_server(fake, monkeypatch):
+    monkeypatch.setattr(state_store, "_current", state_store.MemoryStateStore())
+    body = await place_image(DECK, slide_id=SLIDE, image_base64=b64(PNG_BYTES), box=BOX)
+    assert body["isError"] is True
+    assert body["error"]["kind"] == "hosting"
+    assert "slides-mcp serve-http" in body["error"]["message"]
+    assert fake.batches == []
+
+
+async def test_base64_is_deleted_even_when_google_rejects_it(fake, gcs):
+    fake.fail = SlidesApiError(
+        "Slides API error 400: Invalid requests[0].createImage: The provided image "
+        "was not found.", status=400, reason="x")
+    body = await place_image(DECK, slide_id=SLIDE, image_base64=b64(JPEG_BYTES), box=BOX)
+    assert body["isError"] is True
+    assert body["error"]["kind"] == "google"
+    assert len(gcs.uploads) == 1 and gcs.objects == {}

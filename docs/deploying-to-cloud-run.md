@@ -174,8 +174,8 @@ one deck and one signed-in caller.
    is fine, because reads already treat them as gone.
 
 10. **Optional: an image bucket**, for tools that hand Google an image the
-    server made (Google fetches inserted images from a URL); today that is
-    `place_image` with `svg`. Without it the server still starts and plans
+    server made or was sent (Google fetches inserted images from a URL);
+    today that is `place_image` with `svg` or `image_base64`. Without it the server still starts and plans
     still work; only those image calls fail, with an error naming
     `SLIDES_MCP_IMAGE_BUCKET`. `place_image` with `image_url` never needs it. Each image is uploaded
     under a random name, given to Google as a signed URL valid for 5 minutes,

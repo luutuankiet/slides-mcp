@@ -16,7 +16,7 @@ A reference for using `exec_batch_update` to make legwork-shaped edits to Google
 | Speaker notes, with formatting | `write_speaker_notes` (Markdown in, real bold/italic/headers/bullets out) |
 | A handful of requests whose ids you already know | `exec_batch_update` |
 | A footer on every slide | `add_section_footers` |
-| A diagram (SVG you write) or a picture (public URL) on a slide | `place_image` (`editable=True` for native shapes the user can edit) |
+| A diagram (SVG you write) or a picture (public URL, or a PNG, JPEG or GIF on your disk) on a slide | `place_image` (`editable=True` for native shapes the user can edit; `image_base64` for a local file) |
 
 **Prefer `run_deck_script` whenever you would otherwise read the deck, compute
 requests in your head and paste them back.** The script reads the deck inside
@@ -262,6 +262,10 @@ place_image(
   (points) copied from a reference slide's `read_slides(detail="raw")`.
 - SVG needs the hosted server. `image_url=` with a public PNG, JPEG or GIF
   works anywhere.
+- A PNG, JPEG or GIF on your own disk: pass `image_base64=` instead of `svg=`
+  (hosted server only, under 50 MB). With mcp-piper, write
+  `"@file64:/abs/path.png"` and the bytes never enter your context, so send
+  the full-quality file. Example 6 places one and moves it.
 
 ### Example 5: A diagram the user can edit
 
@@ -304,6 +308,53 @@ place_image(
   Times New Roman or Courier New.
 - `placed.object_ids` is the group's id; move or resize the whole drawing
   through it.
+
+### Example 6: A picture from your disk, then moved and resized
+
+A screenshot or a rendered chart on your own disk goes in as `image_base64`.
+With mcp-piper the argument is a file pointer, so the image never passes
+through your context. It needs the hosted server; over stdio the reply is
+`error.kind == "hosting"`.
+
+```python
+placed = place_image(
+    deck_url,
+    slide_id="flow_slide",
+    image_base64="@file64:/abs/path/chart.png",
+    box={"x": 60, "y": 80, "width": 400, "height": 225},
+)["placed"]  # {"source": "base64", "object_ids": ["<image id>"], ...}
+```
+
+The type is read from the file's first bytes; only PNG, JPEG and GIF are
+accepted. Google keeps the image's own aspect ratio inside the box.
+
+To move or resize it afterwards, pass the receipt's `placed.object_ids` to a
+deck script and use `resize()` and `move()`. Geometry is EMU (`pt(n)` and
+`inch(n)` convert):
+
+```python
+run_deck_script(
+    deck_url,
+    script="""
+      let el = deck.element(input.id);
+      const w = pt(480), h = w * el.h / el.w;    // keep the aspect ratio
+      emit(resize(el, {w, h}));                  // top-left corner stays put
+      await commit();                            // re-read, so move() sees the new size
+      el = deck.element(input.id);
+      emit(move(el, pt(200), pt(120)));          // top-left corner, page space
+      return {w: toPt(el.w), h: toPt(el.h)};
+    """,
+    input={"id": placed["object_ids"][0]},
+)  # the dry run previews the resize and stops at commit(); then apply
+   # with plan_id and dry_run=False
+```
+
+- `resize` scales each axis on its own: pass both `w` and `h`, worked out
+  from `el.w / el.h` as above, or the picture is stretched.
+- Each `resize` or `move` request is absolute, built from the element as the
+  script read it. Two on one element in the same phase: the second undoes the
+  first. `await commit()` between them, as above, or pass `x` and `y` to the
+  one `resize` call.
 
 ## Tips
 

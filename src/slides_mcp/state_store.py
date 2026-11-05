@@ -24,12 +24,14 @@ _CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
 _STDIO_IMAGE_MESSAGE = (
     "Hosting an image for Google to fetch needs the hosted server "
     "(slides-mcp serve-http with SLIDES_MCP_IMAGE_BUCKET set); this server runs over "
-    "stdio. Pass a public image URL instead, or use the hosted server.")
+    "stdio, so place_image cannot take `svg` or `image_base64` here. Pass a public "
+    "image URL as `image_url` instead, or use the hosted server.")
 
 _NO_BUCKET_MESSAGE = (
     "SLIDES_MCP_IMAGE_BUCKET is not set on this server, so it has nowhere to "
     "host an image for Google to fetch. Ask the deployer to set it (see "
-    "docs/deploying-to-cloud-run.md), or pass a public image URL instead.")
+    "docs/deploying-to-cloud-run.md); until then place_image cannot take `svg` or "
+    "`image_base64`. Pass a public image URL as `image_url` instead.")
 
 
 class ImageHostingUnavailable(RuntimeError):

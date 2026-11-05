@@ -1,7 +1,7 @@
 ---
 title: Write wedge (exec_batch_update, add_section_footers, write_speaker_notes, place_image)
-covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises, hosts and places an image, how editable SVG becomes native shapes
-verified: 2026-10-05
+covers: where writes to a deck happen, the destructive-request guard, dry run, the audit line, how post_state and affected_slide_ids are built, the thumbnail receipt each write returns, how section footers are placed, how Markdown notes become requests, how place_image rasterises or decodes, hosts and places an image, how editable SVG becomes native shapes
+verified: 2026-11-06
 ---
 
 # Write wedge
@@ -184,19 +184,24 @@ nested by two spaces.
   round trip `write → read_slides(notes_format="markdown")` is tested without
   the network.
 
-## `place_image` (server.py 1167–1470, `svg_raster.py`, `svg_native.py`)
+## `place_image` (server.py 1284–1555, `svg_raster.py`, `svg_native.py`)
 
-Puts an SVG or a public image URL on one slide, into a marker placeholder or
+Puts an SVG, a public image URL or a base64 PNG, JPEG or GIF on one slide, into a marker placeholder or
 an explicit box, as **one** batch through `_apply_requests` (audit tool
 name `place_image`), so the audit line, post-state and receipt are the same
 as any other write. As an image (the default) in order:
 
-1. Argument checks raise `ValueError`: exactly one of `svg` / `image_url`,
+1. Argument checks raise `ValueError`: exactly one of `svg` / `image_url` /
+   `image_base64`,
    exactly one of `placeholder` / `box`, `fit` only with a placeholder,
    `editable` only with `svg` and never with `fit="cover"`. A placeholder
    without `confirm_destructive` returns `_refusal` before any read, render
-   or upload.
-2. In a worker thread (`_place_image`): for SVG, `store.check_image_hosting()`
+   or upload. `image_base64` is decoded here by `_decode_image` (server.py
+   1424) with `validate=True`: invalid base64, over 50 MB decoded, or first
+   bytes that are not PNG (`\x89PNG`), JPEG (`\xff\xd8\xff`) or GIF (`GIF8`)
+   is a `ValueError`. The sniffed type is the content type; nothing the caller
+   claims is used. There is no pixel-count check: Pillow is not a dependency.
+2. In a worker thread (`_place_image`): for SVG and base64, `store.check_image_hosting()`
    fails fast over stdio or with no bucket. Read the deck once; an unknown
    slide is error kind `target`. For a placeholder, find shapes on the slide
    whose text contains the marker; none is error kind `marker` before
@@ -205,7 +210,9 @@ as any other write. As an image (the default) in order:
    3 px per point (capped at 24 megapixels), so the PNG has the box's aspect
    ratio and the drawing is centred in it. It refuses any `href` that is not
    `#id` or `data:` (resvg would read a local file path). The PNG goes to
-   `store.put_image`; Google gets the signed URL.
+   `store.put_image`; Google gets the signed URL. Base64: the decoded bytes go
+   to `store.put_image` as they are, with the sniffed content type; Google
+   keeps their own aspect ratio inside a box, as with `image_url`.
 4. Placeholder: `replaceAllShapesWithImage` with `pageObjectIds=[slide_id]`
    and `CENTER_INSIDE` (`contain`) or `CENTER_CROP` (`cover`). Box:
    `createImage` with size and transform in points.
@@ -224,7 +231,7 @@ its stderr, writes the PNG to the real stdout, and the parent turns `No match
 for ... font-family` lines into warnings. It also bounds a slow SVG with a
 30 s timeout. A small SVG renders in about 0.06 s, child start included.
 
-### `editable=true`: native shapes (`svg_native.py`, `_place_editable` at server.py 1420)
+### `editable=true`: native shapes (`svg_native.py`, `_place_editable` at server.py 1557)
 
 `svg_native.convert(svg, page_id, box)` turns a subset of SVG into
 `createShape` / `createLine` / text-box requests and returns a `Drawing`

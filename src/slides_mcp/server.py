@@ -14,6 +14,8 @@ See README and skills/slides-mcp/SKILL.md for usage patterns.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 import time
@@ -479,6 +481,8 @@ def render_thumbnail(
 
     Returns: one line of text, then the image. Some clients do not show the
     image to the model; the text line asks you to say so rather than describe it.
+
+    With mcp-piper, add "_save_to": "/abs/dir/" to save the image to disk instead of reading it. Ask for the smallest size when you only need to check layout.
 
     Args:
       slide_id: Slides API object ID for the target page.
@@ -1282,6 +1286,7 @@ async def place_image(
     slide_id: str,
     svg: str | None = None,
     image_url: str | None = None,
+    image_base64: str | None = None,
     placeholder: str | None = None,
     box: dict[str, float] | None = None,
     fit: Fit | None = None,
@@ -1289,7 +1294,7 @@ async def place_image(
     confirm_destructive: bool = False,
     receipt: receipts.Receipt = "medium",
 ) -> Any:
-    """Put an SVG diagram or a public image onto a slide, in a placeholder or a box.
+    """Put an SVG diagram or a PNG, JPEG or GIF image onto a slide, in a placeholder or a box.
 
     Preferred workflow (placeholder first): the user prepares a reference
     slide with a box holding marker text such as `{{DIAGRAM}}`, laid out the
@@ -1316,6 +1321,12 @@ async def place_image(
     image_url: a PNG, JPEG or GIF Google can fetch (public, under 50 MB and
     25 megapixels). Works over stdio too. Google keeps the image's own
     aspect ratio, so in a box the stored size can be smaller than the box.
+
+    image_base64: a PNG, JPEG or GIF from your own disk, sent as base64 (under
+    50 MB decoded). The type is read from the bytes themselves. Hosted briefly
+    for Google to fetch, then deleted, like SVG, so it needs the hosted server.
+    Google keeps the image's own aspect ratio, as with image_url. Send the
+    full-quality file: with mcp-piper the bytes never enter your context.
 
     editable=true: the SVG becomes native Slides shapes the user can edit,
     fitted into the box (centred, aspect kept) and grouped when there are two
@@ -1345,8 +1356,9 @@ async def place_image(
     Args:
       deck_url:            Slides URL or raw deck ID.
       slide_id:            The slide to place on (from `get_deck_outline`).
-      svg:                 SVG markup. Exactly one of svg / image_url.
+      svg:                 SVG markup. Exactly one of svg / image_url / image_base64.
       image_url:           Public image URL.
+      image_base64: PNG, JPEG or GIF bytes as base64. With mcp-piper, pass "@file64:/abs/path.png".
       placeholder:         Marker text in a box on that slide. Exactly one
                            of placeholder / box.
       box:                 {x, y, width, height} in points (a 16:9 slide is
@@ -1369,11 +1381,11 @@ async def place_image(
     hosting, svg, target, marker or google (Google's reason for rejecting it).
     """
     receipts.check(receipt)
-    if (svg is None) == (image_url is None):
-        raise ValueError("Pass exactly one of `svg` or `image_url`.")
+    if sum(v is not None for v in (svg, image_url, image_base64)) != 1:
+        raise ValueError("Pass exactly one of `svg`, `image_url` or `image_base64`.")
     if editable and svg is None:
         raise ValueError("`editable=true` converts SVG into native shapes; it needs `svg`, "
-                         "not `image_url`.")
+                         "not `image_url` or `image_base64`.")
     if (placeholder is None) == (box is None):
         raise ValueError("Pass exactly one target with `slide_id`: `placeholder` "
                          "(marker text) or `box` ({x, y, width, height} in points).")
@@ -1388,6 +1400,9 @@ async def place_image(
     box_pt = _box_pt(box) if box is not None else None
     if placeholder is not None and not confirm_destructive:
         return _refusal(["deleteObject" if editable else "replaceAllShapesWithImage"])
+    image: tuple[bytes, str] | None = None
+    if image_base64 is not None:
+        image = await anyio.to_thread.run_sync(lambda: _decode_image(image_base64))
     if msg := writes.write_scope_error():
         return _place_error("auth", msg)
     if editable:
@@ -1396,8 +1411,37 @@ async def place_image(
             deck_url, slide_id, svg=svg, placeholder=placeholder, box_pt=box_pt,
             receipt=receipt))
     return await anyio.to_thread.run_sync(lambda: _place_image(
-        deck_url, slide_id, svg=svg, image_url=image_url, placeholder=placeholder,
-        box_pt=box_pt, fit=fit or "contain", receipt=receipt))
+        deck_url, slide_id, svg=svg, image_url=image_url, image=image,
+        placeholder=placeholder, box_pt=box_pt, fit=fit or "contain", receipt=receipt))
+
+
+# Same limits Google states for an image it fetches by URL.
+_MAX_IMAGE_BYTES = 50 * 1024 * 1024
+_IMAGE_MAGIC = ((b"\x89PNG", "image/png"), (b"\xff\xd8\xff", "image/jpeg"),
+                (b"GIF8", "image/gif"))
+
+
+def _decode_image(value: str) -> tuple[bytes, str]:
+    """`image_base64` as (bytes, content type); the type comes from the magic bytes."""
+    # Refuse a value far too long before spending memory on decoding it.
+    if len(value) > (_MAX_IMAGE_BYTES // 3 + 1) * 4:
+        raise ValueError("`image_base64` decodes to more than 50 MB, Google's limit for "
+                         "an image.")
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError(f"`image_base64` is not valid base64 ({e}). Send the file's bytes "
+                         f"base64-encoded with no line breaks; with mcp-piper, pass "
+                         f"\"@file64:/abs/path.png\".") from e
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise ValueError("`image_base64` decodes to more than 50 MB, Google's limit for "
+                         "an image.")
+    for magic, content_type in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return data, content_type
+    raise ValueError("`image_base64` is not a PNG, JPEG or GIF (read from its first bytes); "
+                     "those are the three types Google accepts. Convert it first, or pass "
+                     "SVG markup as `svg`.")
 
 
 def _place_image(
@@ -1406,6 +1450,7 @@ def _place_image(
     *,
     svg: str | None,
     image_url: str | None,
+    image: tuple[bytes, str] | None,
     placeholder: str | None,
     box_pt: tuple[float, float, float, float] | None,
     fit: str,
@@ -1413,7 +1458,7 @@ def _place_image(
 ) -> Any:
     """`place_image` after its arguments are checked; runs off the event loop."""
     store = state_store.current()
-    if svg is not None:
+    if svg is not None or image is not None:
         try:
             store.check_image_hosting()
         except state_store.ImageHostingUnavailable as e:
@@ -1447,6 +1492,13 @@ def _place_image(
             except state_store.ImageHostingUnavailable as e:
                 return _place_error("hosting", str(e))
             warnings.extend(raster.warnings)
+            url = hosted.url
+        elif image is not None:
+            data, content_type = image
+            try:
+                hosted = store.put_image(data, content_type=content_type)
+            except state_store.ImageHostingUnavailable as e:
+                return _place_error("hosting", str(e))
             url = hosted.url
         else:
             assert image_url is not None
@@ -1491,11 +1543,12 @@ def _place_image(
         object_ids = [b.object_id for b in boxes]
     else:
         object_ids = [oid for oid in [reply.get("createImage", {}).get("objectId")] if oid]
-        if image_url is not None:
+        if svg is None:
             warnings.append("Google fits the image inside the box at the image's own aspect "
                             "ratio, centred, so its stored size can be smaller than the box.")
     out["placed"] = {"slide_id": slide_id, "object_ids": object_ids,
-                     "source": "svg" if svg is not None else "image_url",
+                     "source": ("svg" if svg is not None
+                                else "base64" if image is not None else "image_url"),
                      "target": "placeholder" if placeholder is not None else "box"}
     out["warnings"] = [*out.get("warnings", []), *warnings]
     return _attach_receipt(out, deck_url, touched, receipt)
